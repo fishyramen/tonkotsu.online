@@ -675,3 +675,8 @@ server.listen(PORT, "0.0.0.0", () => {
   console.log(`✅ Server listening on ${PORT}`);
   console.log(`📁 Using DATA_DIR: ${DATA_DIR}`);
 });
+
+socket.on("requestGlobalHistory", () => {
+  socket.emit("history", GLOBAL); // or whatever your global array is named
+});
+
