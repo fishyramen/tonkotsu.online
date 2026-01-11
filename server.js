@@ -14,11 +14,9 @@ const io = new Server(server, { cors: { origin: "*" } });
 app.use(express.static("public"));
 
 /**
- * -------------------------
  * Persistence (Render disk-ready)
- * -------------------------
- * If you add a Render Persistent Disk mounted at /data,
- * this will automatically store to: /data/tonkotsu.json
+ * Mount a Render Persistent Disk at /data
+ * Stores: /data/tonkotsu.json
  */
 const DISK_FILE = process.env.TONKOTSU_DB_FILE || "/data/tonkotsu.json";
 
@@ -28,21 +26,19 @@ function scheduleSave() {
   saveTimer = setTimeout(() => {
     saveTimer = null;
     saveToDisk().catch(() => {});
-  }, 700);
+  }, 650);
 }
-
 function safeJson(obj) {
   return JSON.stringify(obj, null, 2);
 }
 
-// ---------------- In-memory DB (with disk load/save) ----------------
 const db = {
   users: {},        // username -> user record
   tokens: {},       // token -> username
   global: [],       // [{user,text,ts}]
   dms: {},          // "a|b" -> [{user,text,ts}]
   groups: {},       // gid -> {id,name,owner,members:[...], msgs:[...], active:boolean, pendingInvites:[...]}
-  groupInvites: {}  // username -> [{groupId, from, groupName, ts}]
+  groupInvites: {}  // username -> [{id, from, name, ts}]
 };
 
 function normalizeUser(u) { return String(u || "").trim(); }
@@ -57,26 +53,23 @@ function usernameValid(u) {
   return /^[A-Za-z0-9_.]{3,20}$/.test(u);
 }
 
-// Keep it strict for "weird 18+ stuff" + heavy slur list request.
-// NOTE: we do NOT include slurs explicitly in code here; we use pattern categories instead.
+// Username blocks for obvious 18+ / harmful references (no explicit slur lists in code)
 const USERNAME_BLOCK_PATTERNS = [
   /porn|onlyfans|nude|nsfw|sex|xxx/i,
   /child|minor|underage/i,
   /rape|rapist/i,
   /hitler|nazi/i
 ];
-
 function badUsername(u) {
   const s = String(u || "");
   return USERNAME_BLOCK_PATTERNS.some(rx => rx.test(s));
 }
 
-// Hard filter for harmful messages: hide (not delete)
+// Hard hide patterns (server replaces with marker; client shows “message hidden”)
 const HARD_BLOCK_PATTERNS = [
   /\b(kys|kill\s+yourself)\b/i,
-  /\b(i('?m| am)?\s+going\s+to\s+kill|i('?m| am)?\s+gonna\s+kill)\b/i,
   /\b(send\s+nudes|nude\s+pics)\b/i,
-  /\b(dox|doxx|address|phone\s*number)\b/i
+  /\b(dox|doxx)\b/i
 ];
 function shouldHardHide(text) {
   const t = String(text || "");
@@ -100,19 +93,22 @@ function newToken() { return crypto.randomBytes(24).toString("hex"); }
 // XP model
 function xpNext(level) {
   const base = 120;
-  const growth = Math.floor(base * Math.pow(Math.max(1, level), 1.5));
+  const growth = Math.floor(base * Math.pow(Math.max(1, level), 1.55));
   return Math.max(base, growth);
 }
 function addXP(userRec, amount) {
-  if (!userRec || userRec.guest) return;
+  if (!userRec || userRec.guest) return { leveledUp: false, newLevel: userRec?.xp?.level ?? 1 };
   if (!userRec.xp) userRec.xp = { level: 1, xp: 0, next: xpNext(1) };
+  let leveledUp = false;
   userRec.xp.xp += amount;
 
   while (userRec.xp.xp >= userRec.xp.next) {
     userRec.xp.xp -= userRec.xp.next;
     userRec.xp.level += 1;
     userRec.xp.next = xpNext(userRec.xp.level);
+    leveledUp = true;
   }
+  return { leveledUp, newLevel: userRec.xp.level };
 }
 
 // Create/get user
@@ -125,12 +121,11 @@ function ensureUser(username, password) {
       guest: false,
       settings: {
         theme: "dark",
-        density: 0.15,        // compact default
-        sidebar: 0.22,        // narrow default
+        density: 0.10,     // compact default
+        sidebar: 0.20,     // narrow default
         hideMildProfanity: false,
-        customCursor: true,   // MATCHES frontend
-        pingSound: true,      // MATCHES frontend
-        pingVolume: 0.45      // MATCHES frontend
+        cursor: true,
+        sounds: true
       },
       social: {
         friends: [],
@@ -139,7 +134,8 @@ function ensureUser(username, password) {
         blocked: []
       },
       stats: { messages: 0 },
-      xp: { level: 1, xp: 0, next: xpNext(1) }
+      xp: { level: 1, xp: 0, next: xpNext(1) },
+      mutes: { dms: [], groups: [] } // global has no pings anyway
     };
   }
   return db.users[username];
@@ -156,8 +152,7 @@ function publicProfile(username) {
     level: u.xp?.level ?? 1,
     xp: u.xp?.xp ?? 0,
     next: u.xp?.next ?? xpNext(1),
-    messages: u.stats?.messages ?? 0,
-    friendsCount: u.social?.friends?.length ?? 0
+    messages: u.stats?.messages ?? 0
   };
 }
 
@@ -170,35 +165,23 @@ function emitOnline() {
   io.emit("onlineUsers", list);
 }
 
-function getInvites(username) {
-  return db.groupInvites[username] || [];
-}
-
-// Messages ping count (non-global)
-function computeMessagePing(username) {
-  // Simple model: count of pending friend requests + group invites
-  // + you can extend later with unread per DM/group.
-  const u = db.users[username];
-  if (!u || u.guest) return 0;
-  return (u.social?.incoming?.length || 0) + (getInvites(username).length || 0);
-}
-
-function emitPing(username) {
+function emitInboxCounts(username) {
   const u = db.users[username];
   if (!u || u.guest) return;
-  io.to(username).emit("ping:update", { messages: computeMessagePing(username) });
+  const friendReq = u.social.incoming.length;
+  const groupInv = (db.groupInvites[username] || []).length;
+  io.to(username).emit("inbox:counts", {
+    friend: friendReq,
+    group: groupInv,
+    total: friendReq + groupInv
+  });
 }
 
 function emitSocial(username) {
   const u = db.users[username];
   if (!u || u.guest) return;
-
-  io.to(username).emit("social:update", {
-    ...u.social,
-    groupInvites: getInvites(username)
-  });
-
-  emitPing(username);
+  io.to(username).emit("social:update", u.social);
+  emitInboxCounts(username);
 }
 
 function emitGroupsList(username) {
@@ -240,7 +223,7 @@ async function loadFromDisk() {
 async function saveToDisk() {
   try {
     const dir = path.dirname(DISK_FILE);
-    if (!fs.existsSync(dir)) return; // no disk mounted
+    if (!fs.existsSync(dir)) return;
     const payload = {
       users: db.users,
       tokens: db.tokens,
@@ -257,26 +240,18 @@ async function saveToDisk() {
 
 await loadFromDisk();
 
-// ---------------- Socket events ----------------
 io.on("connection", (socket) => {
   function currentUser() {
     return socketToUser.get(socket.id) || null;
   }
-  function isGuestUserName(name) {
+  function isGuestName(name) {
     return /^Guest\d{4,5}$/.test(String(name));
   }
   function requireAuth() {
     const u = currentUser();
     if (!u) return null;
-    if (isGuestUserName(u)) return null;
+    if (isGuestName(u)) return null;
     return u;
-  }
-
-  function attachUser(username) {
-    socketToUser.set(socket.id, username);
-    socket.join(username);
-    online.add(username);
-    emitOnline();
   }
 
   socket.on("resume", ({ token } = {}) => {
@@ -287,7 +262,10 @@ io.on("connection", (socket) => {
       return;
     }
 
-    attachUser(username);
+    socketToUser.set(socket.id, username);
+    socket.join(username);
+    online.add(username);
+    emitOnline();
 
     const userRec = db.users[username];
     socket.emit("loginSuccess", {
@@ -295,7 +273,7 @@ io.on("connection", (socket) => {
       guest: false,
       token: t,
       settings: userRec.settings,
-      social: { ...userRec.social, groupInvites: getInvites(username) },
+      social: userRec.social,
       xp: userRec.xp
     });
 
@@ -307,27 +285,26 @@ io.on("connection", (socket) => {
 
   socket.on("login", ({ username, password, guest } = {}) => {
     if (guest) {
-      // Guest ID must be 4 digits (frontend requests 4; allow 4-5 in regex)
-      const digits = String(Math.floor(1000 + Math.random() * 9000)); // 4 digits
+      // Guest ID must be 4-5 digits
+      const digits = (Math.random() < 0.5)
+        ? String(Math.floor(1000 + Math.random() * 9000))
+        : String(Math.floor(10000 + Math.random() * 90000));
       const g = `Guest${digits}`;
 
       socketToUser.set(socket.id, g);
-      online.add(g);
-      emitOnline();
-
+      // guests are not added to online set (keeps online real users clean)
       socket.emit("loginSuccess", {
         username: g,
         guest: true,
         settings: {
           theme: "dark",
-          density: 0.15,
-          sidebar: 0.22,
+          density: 0.10,
+          sidebar: 0.20,
           hideMildProfanity: false,
-          customCursor: true,
-          pingSound: true,
-          pingVolume: 0.45
+          cursor: true,
+          sounds: true
         },
-        social: { friends: [], incoming: [], outgoing: [], blocked: [], groupInvites: [] },
+        social: { friends: [], incoming: [], outgoing: [], blocked: [] },
         xp: null
       });
       return;
@@ -359,7 +336,10 @@ io.on("connection", (socket) => {
     const token = newToken();
     db.tokens[token] = u;
 
-    attachUser(u);
+    socketToUser.set(socket.id, u);
+    socket.join(u);
+    online.add(u);
+    emitOnline();
 
     const userRec = db.users[u];
     socket.emit("loginSuccess", {
@@ -367,7 +347,7 @@ io.on("connection", (socket) => {
       guest: false,
       token,
       settings: userRec.settings,
-      social: { ...userRec.social, groupInvites: getInvites(u) },
+      social: userRec.social,
       xp: userRec.xp
     });
 
@@ -381,13 +361,13 @@ io.on("connection", (socket) => {
   socket.on("disconnect", () => {
     const u = currentUser();
     socketToUser.delete(socket.id);
-    if (u) {
+    if (u && !isGuestName(u)) {
       online.delete(u);
       emitOnline();
     }
   });
 
-  // Settings update (SAVE ONLY — client handles previews)
+  // Settings update (SAVE ONLY — client previews locally)
   socket.on("settings:update", (settings) => {
     const username = requireAuth();
     if (!username) return;
@@ -397,23 +377,15 @@ io.on("connection", (socket) => {
     const s = settings || {};
     u.settings = {
       theme: ["dark", "vortex", "abyss", "carbon"].includes(s.theme) ? s.theme : "dark",
-      density: Number.isFinite(s.density) ? Math.max(0, Math.min(1, s.density)) : 0.15,
-      sidebar: Number.isFinite(s.sidebar) ? Math.max(0, Math.min(1, s.sidebar)) : 0.22,
+      density: Number.isFinite(s.density) ? Math.max(0, Math.min(1, s.density)) : 0.10,
+      sidebar: Number.isFinite(s.sidebar) ? Math.max(0, Math.min(1, s.sidebar)) : 0.20,
       hideMildProfanity: !!s.hideMildProfanity,
-      customCursor: s.customCursor !== false,
-      pingSound: s.pingSound !== false,
-      pingVolume: Number.isFinite(s.pingVolume) ? Math.max(0, Math.min(1, s.pingVolume)) : 0.45
+      cursor: s.cursor !== false,
+      sounds: s.sounds !== false
     };
 
     socket.emit("settings", u.settings);
     scheduleSave();
-  });
-
-  // Social sync
-  socket.on("social:sync", () => {
-    const username = requireAuth();
-    if (!username) return;
-    emitSocial(username);
   });
 
   // Profile
@@ -421,7 +393,7 @@ io.on("connection", (socket) => {
     const target = normalizeUser(user);
     if (!target) return;
 
-    if (/^Guest\d{4,5}$/.test(target)) {
+    if (isGuestName(target)) {
       socket.emit("profile:data", { user: target, guest: true });
       return;
     }
@@ -456,12 +428,12 @@ io.on("connection", (socket) => {
       socket.emit("sendError", { reason: "Blocked." });
       return;
     }
-    if (me.social.friends.includes(target)) {
-      socket.emit("sendError", { reason: "Already friends." });
-      return;
-    }
     if (me.social.outgoing.includes(target)) {
       socket.emit("sendError", { reason: "Request already sent." });
+      return;
+    }
+    if (me.social.friends.includes(target)) {
+      socket.emit("sendError", { reason: "Already friends." });
       return;
     }
 
@@ -510,24 +482,6 @@ io.on("connection", (socket) => {
     scheduleSave();
   });
 
-  socket.on("friend:remove", ({ user } = {}) => {
-    const username = requireAuth();
-    if (!username) return;
-
-    const target = normalizeUser(user);
-    const me = db.users[username];
-    const them = db.users[target];
-    if (!them) return;
-
-    me.social.friends = me.social.friends.filter(x => x !== target);
-    them.social.friends = them.social.friends.filter(x => x !== username);
-
-    emitSocial(username);
-    emitSocial(target);
-    scheduleSave();
-  });
-
-  // Block user
   socket.on("user:block", ({ user } = {}) => {
     const username = requireAuth();
     if (!username) return;
@@ -566,6 +520,32 @@ io.on("connection", (socket) => {
     scheduleSave();
   });
 
+  // Mute (right click in UI)
+  socket.on("mute:set", ({ kind, id, muted } = {}) => {
+    const username = requireAuth();
+    if (!username) return;
+    const u = db.users[username];
+    if (!u) return;
+
+    const k = String(kind || "");
+    const val = !!muted;
+    if (k === "dm") {
+      const d = String(id || "");
+      u.mutes.dms = val ? Array.from(new Set([...u.mutes.dms, d])) : u.mutes.dms.filter(x => x !== d);
+    } else if (k === "group") {
+      const g = String(id || "");
+      u.mutes.groups = val ? Array.from(new Set([...u.mutes.groups, g])) : u.mutes.groups.filter(x => x !== g);
+    }
+    socket.emit("mute:data", u.mutes);
+    scheduleSave();
+  });
+
+  socket.on("mute:get", () => {
+    const username = requireAuth();
+    if (!username) return;
+    socket.emit("mute:data", db.users[username]?.mutes || { dms: [], groups: [] });
+  });
+
   // Global history + send
   socket.on("requestGlobalHistory", () => {
     socket.emit("history", db.global.slice(-200));
@@ -580,19 +560,22 @@ io.on("connection", (socket) => {
 
     const msg = { user: sender, text: safeText, ts: Number(ts) || now() };
     db.global.push(msg);
-    if (db.global.length > 250) db.global.shift();
+    if (db.global.length > 300) db.global.shift();
 
     io.emit("globalMessage", msg);
 
-    if (!/^Guest/.test(sender) && db.users[sender]) {
-      db.users[sender].stats.messages += 1;
-      addXP(db.users[sender], 8);
-      io.to(sender).emit("xp:update", db.users[sender].xp);
+    // XP only for real users
+    if (!isGuestName(sender) && db.users[sender]) {
+      const u = db.users[sender];
+      u.stats.messages += 1;
+      const { leveledUp, newLevel } = addXP(u, 8);
+      io.to(sender).emit("xp:update", u.xp);
+      if (leveledUp) io.to(sender).emit("xp:levelUp", { level: newLevel });
       scheduleSave();
     }
   });
 
-  // DM history + send (respects blocking)
+  // DM history + send
   socket.on("dm:history", ({ withUser } = {}) => {
     const username = requireAuth();
     if (!username) return;
@@ -634,28 +617,22 @@ io.on("connection", (socket) => {
     const key = dmKey(username, target);
     const list = getOrCreateDM(key);
     list.push(msg);
-    if (list.length > 250) list.shift();
+    if (list.length > 300) list.shift();
 
-    // deliver:
-    // receiver sees from: username
-    io.to(target).emit("dm:message", { from: username, msg });
-    // sender sees from: target (frontend expects this)
     io.to(username).emit("dm:message", { from: target, msg });
+    io.to(target).emit("dm:message", { from: username, msg });
 
     me.stats.messages += 1;
-    addXP(me, 10);
+    const { leveledUp, newLevel } = addXP(me, 10);
     io.to(username).emit("xp:update", me.xp);
+    if (leveledUp) io.to(username).emit("xp:levelUp", { level: newLevel });
 
-    emitPing(username);
-    emitPing(target);
     scheduleSave();
   });
 
   /**
-   * Groups (invites REQUIRED):
-   * - Frontend emits: group:createWithInvites {name, invites} with invites >=2
-   * - Group is created "pending", becomes active when anyone accepts invite
-   * - Invites appear in social:update.groupInvites
+   * Groups: invites required to create
+   * - group:createRequest sends invites, group becomes active when >=1 invitee accepts
    */
   socket.on("groups:list", () => {
     const username = requireAuth();
@@ -663,7 +640,7 @@ io.on("connection", (socket) => {
     emitGroupsList(username);
   });
 
-  socket.on("group:createWithInvites", ({ name, invites } = {}) => {
+  socket.on("group:createRequest", ({ name, invites } = {}) => {
     const username = requireAuth();
     if (!username) return;
 
@@ -671,9 +648,8 @@ io.on("connection", (socket) => {
     const uniqueInvites = Array.from(new Set(list))
       .filter(u => u && u !== username && db.users[u]);
 
-    // frontend enforces 2+, but keep server strict too
-    if (uniqueInvites.length < 2) {
-      socket.emit("sendError", { reason: "Invite at least 2 people to create a group." });
+    if (uniqueInvites.length < 1) {
+      socket.emit("sendError", { reason: "Invite at least 1 person to create a group." });
       return;
     }
 
@@ -684,64 +660,72 @@ io.on("connection", (socket) => {
       id: gid,
       name: gname,
       owner: username,
-      members: [username], // owner only until accept
+      members: [username],
       msgs: [],
       active: false,
       pendingInvites: uniqueInvites
     };
 
-    // push invite into each user's inbox
     for (const u of uniqueInvites) {
       if (!db.groupInvites[u]) db.groupInvites[u] = [];
-      db.groupInvites[u].unshift({ groupId: gid, from: username, groupName: gname, ts: now() });
+      db.groupInvites[u].unshift({ id: gid, from: username, name: gname, ts: now() });
       db.groupInvites[u] = db.groupInvites[u].slice(0, 50);
-      emitSocial(u);
+      emitInboxCounts(u);
     }
 
-    socket.emit("group:requestCreated", { groupId: gid, name: gname, invites: uniqueInvites });
-    emitPing(username);
+    socket.emit("group:requestCreated", { id: gid, name: gname, invites: uniqueInvites });
+    emitInboxCounts(username);
     scheduleSave();
   });
 
-  // Accept/decline invite (frontend event names)
-  socket.on("group:invite:accept", ({ groupId } = {}) => {
+  socket.on("inbox:get", () => {
+    const username = requireAuth();
+    if (!username) return;
+    const u = db.users[username];
+
+    socket.emit("inbox:data", {
+      friendRequests: u.social.incoming || [],
+      groupInvites: db.groupInvites[username] || []
+    });
+    emitInboxCounts(username);
+  });
+
+  socket.on("groupInvite:accept", ({ id } = {}) => {
     const username = requireAuth();
     if (!username) return;
 
-    const gid = String(groupId || "");
+    const gid = String(id || "");
     const g = db.groups[gid];
     if (!g) return;
 
-    // remove invite from inbox
-    db.groupInvites[username] = (db.groupInvites[username] || []).filter(x => x.groupId !== gid);
+    db.groupInvites[username] = (db.groupInvites[username] || []).filter(x => x.id !== gid);
 
     if (!g.members.includes(username)) g.members.push(username);
     if (!g.active) g.active = true;
     g.pendingInvites = (g.pendingInvites || []).filter(x => x !== username);
 
-    // notify members + refresh lists
     for (const member of g.members) {
       io.to(member).emit("group:meta", {
         groupId: gid,
         meta: { id: gid, name: g.name, owner: g.owner, members: g.members }
       });
       emitGroupsList(member);
-      emitSocial(member);
     }
 
+    emitInboxCounts(username);
     scheduleSave();
   });
 
-  socket.on("group:invite:decline", ({ groupId } = {}) => {
+  socket.on("groupInvite:decline", ({ id } = {}) => {
     const username = requireAuth();
     if (!username) return;
 
-    const gid = String(groupId || "");
+    const gid = String(id || "");
     const g = db.groups[gid];
     if (g?.pendingInvites) g.pendingInvites = g.pendingInvites.filter(x => x !== username);
 
-    db.groupInvites[username] = (db.groupInvites[username] || []).filter(x => x.groupId !== gid);
-    emitSocial(username);
+    db.groupInvites[username] = (db.groupInvites[username] || []).filter(x => x.id !== gid);
+    emitInboxCounts(username);
     scheduleSave();
   });
 
@@ -783,13 +767,13 @@ io.on("connection", (socket) => {
 
     for (const member of g.members) {
       io.to(member).emit("group:message", { groupId: gid, msg });
-      emitPing(member);
     }
 
     const me = db.users[username];
     me.stats.messages += 1;
-    addXP(me, 9);
+    const { leveledUp, newLevel } = addXP(me, 9);
     io.to(username).emit("xp:update", me.xp);
+    if (leveledUp) io.to(username).emit("xp:levelUp", { level: newLevel });
 
     scheduleSave();
   });
@@ -815,9 +799,7 @@ io.on("connection", (socket) => {
     for (const m of g.members) {
       io.to(m).emit("group:meta", { groupId: gid, meta: { id: gid, name: g.name, owner: g.owner, members: g.members } });
       emitGroupsList(m);
-      emitPing(m);
     }
-
     scheduleSave();
   });
 
@@ -839,17 +821,13 @@ io.on("connection", (socket) => {
     }
 
     g.members = g.members.filter(x => x !== target);
-
     io.to(target).emit("group:left", { groupId: gid });
 
     for (const m of g.members) {
       io.to(m).emit("group:meta", { groupId: gid, meta: { id: gid, name: g.name, owner: g.owner, members: g.members } });
       emitGroupsList(m);
-      emitPing(m);
     }
     emitGroupsList(target);
-    emitPing(target);
-
     scheduleSave();
   });
 
@@ -867,7 +845,6 @@ io.on("connection", (socket) => {
       for (const m of members) {
         io.to(m).emit("group:deleted", { groupId: gid });
         emitGroupsList(m);
-        emitPing(m);
       }
       scheduleSave();
       return;
@@ -879,11 +856,8 @@ io.on("connection", (socket) => {
     for (const m of g.members) {
       io.to(m).emit("group:meta", { groupId: gid, meta: { id: gid, name: g.name, owner: g.owner, members: g.members } });
       emitGroupsList(m);
-      emitPing(m);
     }
     emitGroupsList(username);
-    emitPing(username);
-
     scheduleSave();
   });
 
@@ -903,7 +877,6 @@ io.on("connection", (socket) => {
     for (const m of members) {
       io.to(m).emit("group:deleted", { groupId: gid });
       emitGroupsList(m);
-      emitPing(m);
     }
     scheduleSave();
   });
@@ -949,14 +922,11 @@ io.on("connection", (socket) => {
     for (const m of g.members) {
       io.to(m).emit("group:meta", { groupId: gid, meta: { id: gid, name: g.name, owner: g.owner, members: g.members } });
       emitGroupsList(m);
-      emitPing(m);
     }
     scheduleSave();
   });
-
-  // Optional: view:set for future unread tracking (frontend emits it)
-  socket.on("view:set", () => {});
 });
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => console.log("Server listening on", PORT));
+
