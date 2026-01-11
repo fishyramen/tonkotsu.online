@@ -4,28 +4,24 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>tonkotsu.online</title>
-
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-
   <style>
     :root{
       --bg:#0b0d10;
       --panel:#0f1318;
-      --panel2:#0d1116;
       --stroke:#1c232c;
       --stroke2:#242c36;
       --text:#e8edf3;
       --muted:#9aa7b3;
-      --white:#ffffff;
       --shadow: 0 18px 50px rgba(0,0,0,.55);
       --shadow2: 0 10px 30px rgba(0,0,0,.45);
       --radius:16px;
-      --radius2:12px;
       --ease: cubic-bezier(.2,.8,.2,1);
       --danger:#ff4d4d;
       --ok:#31d27c;
+      --warn:#ffcc66;
     }
 
     *{box-sizing:border-box}
@@ -38,36 +34,37 @@
       overflow:hidden;
     }
 
-    /* Background detail (NOT a gradient background) */
-    .bgDetail{
-      position:fixed; inset:0; pointer-events:none; z-index:0;
+    /* Subtle background detail (NOT gradient) */
+    .bg{
+      position:fixed; inset:0; pointer-events:none;
       background:
-        radial-gradient(circle at 18% 18%, rgba(255,255,255,.06), transparent 42%),
-        radial-gradient(circle at 78% 72%, rgba(255,255,255,.05), transparent 44%);
-      opacity:.55;
+        radial-gradient(circle at 15% 20%, rgba(255,255,255,.06), transparent 45%),
+        radial-gradient(circle at 80% 70%, rgba(255,255,255,.05), transparent 45%);
+      opacity:.65;
     }
     .noise{
-      position:fixed; inset:-30%; pointer-events:none; z-index:1;
+      position:fixed; inset:-30%; pointer-events:none;
       background-image:url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="220" height="220" viewBox="0 0 220 220"><filter id="n"><feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="3" stitchTiles="stitch"/></filter><rect width="220" height="220" filter="url(%23n)" opacity="0.16"/></svg>');
       mix-blend-mode: overlay;
-      opacity:.22;
+      opacity:.25;
       transform: rotate(8deg);
     }
 
-    /* App */
     .app{
-      position:relative; z-index:2;
+      position:relative;
       height:100%;
       display:flex;
-      gap:14px;
-      padding:14px;
+      gap:12px;
+      padding:12px;
       opacity:0;
       transform: translateY(8px);
-      transition: opacity .45s var(--ease), transform .45s var(--ease);
+      transition: opacity .5s var(--ease), transform .5s var(--ease);
     }
     .app.ready{opacity:1; transform: translateY(0)}
 
-    .sidebar, .main{
+    .sidebar{
+      width:320px;
+      min-width:280px;
       background:rgba(255,255,255,.02);
       border:1px solid var(--stroke);
       border-radius:var(--radius);
@@ -75,12 +72,19 @@
       overflow:hidden;
       display:flex;
       flex-direction:column;
-      min-height:0;
     }
-    .sidebar{width:320px; min-width:280px}
-    .main{flex:1; min-width:0}
+    .main{
+      flex:1;
+      min-width:0;
+      background:rgba(255,255,255,.02);
+      border:1px solid var(--stroke);
+      border-radius:var(--radius);
+      box-shadow: var(--shadow2);
+      overflow:hidden;
+      display:flex;
+      flex-direction:column;
+    }
 
-    /* Brand */
     .brand{
       padding:14px 14px 12px;
       border-bottom:1px solid var(--stroke);
@@ -90,16 +94,14 @@
       gap:10px;
     }
     .brandLeft{display:flex; align-items:center; gap:10px; min-width:0}
-    .logoDot{width:10px; height:10px; border-radius:50%; background:var(--white); opacity:.9; box-shadow:0 0 0 4px rgba(255,255,255,.06)}
+    .logoDot{width:10px; height:10px; border-radius:50%; background:#fff; opacity:.9; box-shadow:0 0 0 4px rgba(255,255,255,.06)}
     .titleWrap{display:flex; align-items:baseline; gap:10px; min-width:0}
     .title{
-      font-weight:900;
-      letter-spacing:-0.05em;
+      font-weight:800;
+      letter-spacing:-0.04em;
       font-size:18px;
       white-space:nowrap;
     }
-
-    /* Small beta next to title */
     .betaBadge{
       font-size:11px;
       color:var(--muted);
@@ -108,28 +110,23 @@
       border-radius:999px;
       background:rgba(255,255,255,.02);
       transform: translateY(0);
-      transition: transform .18s var(--ease), border-color .18s var(--ease), color .18s var(--ease);
+      transition: transform .2s var(--ease), border-color .2s var(--ease), color .2s var(--ease);
       cursor:default;
       user-select:none;
     }
-    .betaBadge:hover{
-      transform: translateY(-1px);
-      border-color: rgba(255,255,255,.24);
-      color:#d6e0ea;
-    }
+    .betaBadge:hover{transform: translateY(-1px); border-color: rgba(255,255,255,.24); color: #cfd8e3}
 
-    .mePill{
+    .userPill{
       display:flex; align-items:center; gap:10px;
       padding:6px 10px;
       border:1px solid var(--stroke2);
       border-radius:999px;
       background:rgba(255,255,255,.02);
-      max-width: 170px;
+      max-width: 160px;
     }
     .meDot{width:9px; height:9px; border-radius:50%; background:var(--ok); box-shadow:0 0 0 4px rgba(49,210,124,.12)}
     .meName{font-size:12px; color:#dbe6f1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
 
-    /* Buttons */
     .nav{
       padding:10px;
       display:flex;
@@ -144,30 +141,30 @@
       border:1px solid var(--stroke2);
       padding:10px 10px;
       border-radius:12px;
-      font-weight:700;
+      font-weight:600;
       font-size:12px;
       cursor:pointer;
-      transition: transform .12s var(--ease), background .12s var(--ease), border-color .12s var(--ease);
+      transition: transform .12s var(--ease), border-color .12s var(--ease), background .12s var(--ease);
       display:flex;
       align-items:center;
       justify-content:center;
       gap:8px;
       min-width:0;
-      user-select:none;
     }
     .btn:hover{transform: translateY(-1px); border-color: rgba(255,255,255,.22)}
-    .btn:active{transform: translateY(0)}
     .btn.primary{background:rgba(255,255,255,.08)}
     .btn.small{padding:8px 10px; border-radius:10px; font-size:12px}
     .btn.ghost{background:transparent}
 
     .ping{
-      min-width:18px; height:18px; border-radius:999px;
+      min-width:18px;
+      height:18px;
+      border-radius:999px;
       background:rgba(255,77,77,.18);
       border:1px solid rgba(255,77,77,.35);
       color:#ffd8d8;
       font-size:11px;
-      font-weight:900;
+      font-weight:800;
       display:none;
       align-items:center;
       justify-content:center;
@@ -175,7 +172,6 @@
     }
     .ping.show{display:inline-flex}
 
-    /* Sidebar content */
     .section{
       padding:12px;
       display:flex;
@@ -184,15 +180,6 @@
       overflow:auto;
       min-height:0;
     }
-    .card{
-      border:1px solid var(--stroke);
-      background:rgba(0,0,0,.20);
-      border-radius:14px;
-      padding:10px;
-    }
-    .listTitle{display:flex; align-items:center; justify-content:space-between; gap:10px; padding:0 2px}
-    .listTitle h3{margin:0; font-size:12px; color:#dbe6f1; letter-spacing:.02em}
-    .list{display:flex; flex-direction:column; gap:8px;}
 
     .row{
       display:flex;
@@ -212,23 +199,11 @@
     .rowLeft{display:flex; align-items:center; gap:10px; min-width:0}
     .statusDot{width:9px; height:9px; border-radius:50%; background:#7b8794}
     .statusDot.on{background:var(--ok); box-shadow:0 0 0 4px rgba(49,210,124,.12)}
+
     .nameCol{min-width:0; display:flex; flex-direction:column}
-    .rowName{font-size:12px; font-weight:800; color:#e9eff7; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width: 160px}
-    .rowSub{font-size:11px; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width: 160px}
-    .rowRight{display:flex; align-items:center; gap:8px}
+    .rowName{font-size:12px; font-weight:650; color:#e9eff7; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width: 180px}
+    .rowSub{font-size:11px; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width: 180px}
 
-    /* Bottom buttons: no scroll needed */
-    .sideBottom{
-      padding:12px;
-      border-top:1px solid var(--stroke);
-      display:flex;
-      flex-direction:column;
-      gap:10px;
-    }
-    .stack{display:flex; gap:10px}
-    .stack .btn{flex:1}
-
-    /* Chat */
     .chatHeader{
       padding:12px 14px;
       border-bottom:1px solid var(--stroke);
@@ -237,9 +212,8 @@
       justify-content:space-between;
       gap:10px;
     }
-    .chatHeader .left{display:flex; align-items:center; gap:10px; min-width:0}
-    .chatTitle{font-size:13px; font-weight:900; letter-spacing:-0.02em; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
-    .chatHint{font-size:11px; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+    .chatTitle{font-size:13px; font-weight:800; letter-spacing:-0.02em; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+    .chatHint{font-size:11px; color:var(--muted);}
 
     .chatBox{
       flex:1;
@@ -259,32 +233,14 @@
       border-radius:14px;
       border:1px solid rgba(255,255,255,.10);
       background:rgba(255,255,255,.03);
-      transform: translateY(0);
       transition: transform .14s var(--ease), border-color .14s var(--ease), background .14s var(--ease);
     }
     .msg:hover{transform: translateY(-1px) scale(1.01); border-color: rgba(255,255,255,.18); background: rgba(255,255,255,.04)}
-    .avatar{
-      width:32px; height:32px; border-radius:12px;
-      border:1px solid rgba(255,255,255,.14);
-      background:rgba(0,0,0,.25);
-      position:relative; overflow:hidden; flex:none;
-    }
-    .avatar::after{
-      content:"";
-      position:absolute; inset:-30px;
-      background: radial-gradient(circle at 30% 30%, rgba(255,255,255,.25), transparent 55%);
-      opacity:.35;
-    }
     .bubble{min-width:0; flex:1}
-    .meta{
-      display:flex;
-      align-items:baseline;
-      gap:8px;
-      flex-wrap:wrap;
-    }
-    .u{font-weight:900; font-size:12px; letter-spacing:-0.01em; white-space:nowrap}
+    .meta{display:flex; align-items:baseline; gap:8px; flex-wrap:wrap}
+    .u{font-weight:800; font-size:12px; white-space:nowrap}
     .t{font-size:11px; color:var(--muted); white-space:nowrap}
-    .body{margin-top:4px; font-size:13px; line-height:1.35; color:#e8edf3; word-wrap:break-word; white-space:pre-wrap}
+    .body{margin-top:4px; font-size:13px; line-height:1.35; white-space:pre-wrap; word-wrap:break-word}
 
     .composer{
       border-top:1px solid var(--stroke);
@@ -293,8 +249,7 @@
       gap:10px;
       background: rgba(0,0,0,.18);
     }
-
-    .inputWrap{flex:1; display:flex; flex-direction:column; gap:6px; min-width:0}
+    .inputWrap{flex:1; display:flex; flex-direction:column; gap:8px; min-width:0}
     .inputRow{display:flex; gap:10px; align-items:flex-end}
 
     textarea{
@@ -311,11 +266,8 @@
       min-height:42px;
       max-height:120px;
       overflow:auto;
-      transition: border-color .15s var(--ease), background .15s var(--ease);
     }
-    textarea:focus{border-color: rgba(255,255,255,.22); background: rgba(255,255,255,.03)}
 
-    /* Cooldown bar */
     .cooldown{
       display:flex;
       align-items:center;
@@ -324,7 +276,6 @@
       color:var(--muted);
       height:14px;
       user-select:none;
-      transition: color .35s var(--ease);
     }
     .cdBar{
       flex:1;
@@ -334,12 +285,7 @@
       overflow:hidden;
       border:1px solid rgba(255,255,255,.08);
     }
-    .cdFill{
-      height:100%;
-      width:0%;
-      background: rgba(255,255,255,.18);
-      transition: width .08s linear;
-    }
+    .cdFill{height:100%; width:0%; background: rgba(255,255,255,.18); transition: width .08s linear;}
     .cooldown.warn{color: var(--danger)}
     .cooldown.warn .cdFill{background: rgba(255,77,77,.35)}
 
@@ -354,9 +300,12 @@
 
     /* Login overlay */
     .overlay{
-      position:fixed; inset:0; z-index:50;
-      display:flex; align-items:center; justify-content:center;
+      position:fixed; inset:0;
+      display:flex;
+      align-items:center;
+      justify-content:center;
       padding:18px;
+      z-index:50;
     }
     .overlay.hidden{display:none}
 
@@ -378,7 +327,7 @@
       padding:16px 16px 12px;
       border-bottom:1px solid var(--stroke);
       display:flex;
-      align-items:flex-start;
+      align-items:center;
       justify-content:space-between;
       gap:12px;
     }
@@ -390,7 +339,6 @@
       margin:0;
     }
     .loginBody{padding:14px 16px 16px; display:flex; flex-direction:column; gap:12px}
-
     .tutorial{
       border:1px solid var(--stroke);
       background:rgba(255,255,255,.02);
@@ -400,8 +348,11 @@
       font-size:12px;
       line-height:1.45;
     }
+
     .grid2{display:grid; grid-template-columns:1fr 1fr; gap:10px}
+    .fieldWrap{position:relative}
     .field{
+      width:100%;
       border:1px solid var(--stroke2);
       background:rgba(255,255,255,.02);
       color:var(--text);
@@ -410,13 +361,30 @@
       font-family:inherit;
       font-size:13px;
       outline:none;
-      transition:border-color .15s var(--ease), background .15s var(--ease);
     }
-    .field:focus{border-color: rgba(255,255,255,.22); background: rgba(255,255,255,.03)}
+    .eyeBtn{
+      position:absolute;
+      right:10px;
+      top:50%;
+      transform: translateY(-50%);
+      width:34px;
+      height:34px;
+      border-radius:12px;
+      border:1px solid rgba(255,255,255,.12);
+      background: rgba(255,255,255,.02);
+      color: var(--text);
+      cursor:pointer;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      transition: transform .12s var(--ease), border-color .12s var(--ease), background .12s var(--ease);
+    }
+    .eyeBtn:hover{transform: translateY(-50%) scale(1.02); border-color: rgba(255,255,255,.22); background: rgba(255,255,255,.04)}
+
     .loginActions{display:flex; gap:10px}
     .loginActions .btn{flex:1}
 
-    /* Loading screen */
+    /* Loading */
     .loading{
       position:fixed; inset:0;
       z-index:60;
@@ -437,13 +405,13 @@
       overflow:hidden;
       transform: translateY(10px);
       opacity:0;
-      animation: popIn .35s var(--ease) forwards;
+      animation: popIn .4s var(--ease) forwards;
     }
     .prog{margin-top:12px; height:10px; border-radius:999px; background: rgba(255,255,255,.07); border:1px solid rgba(255,255,255,.08); overflow:hidden}
     .prog > div{height:100%; width:10%; background: rgba(255,255,255,.18); animation: loadMove 1.25s ease-in-out infinite}
     @keyframes loadMove{0%{transform: translateX(-40%); width:20%} 50%{transform: translateX(180%); width:35%} 100%{transform: translateX(520%); width:20%}}
 
-    /* Modals (NO alerts) */
+    /* Modal */
     .modalBack{
       position:fixed; inset:0;
       background: rgba(0,0,0,.55);
@@ -455,9 +423,8 @@
       z-index:80;
     }
     .modalBack.show{display:flex}
-
     .modal{
-      width:min(560px, 100%);
+      width:min(520px, 100%);
       border-radius:18px;
       border:1px solid var(--stroke);
       background:rgba(12,14,18,.80);
@@ -465,10 +432,9 @@
       overflow:hidden;
       transform: translateY(10px) scale(.98);
       opacity:0;
-      animation: modalIn .28s var(--ease) forwards;
+      animation: modalIn .32s var(--ease) forwards;
     }
     @keyframes modalIn{to{transform: translateY(0) scale(1); opacity:1}}
-
     .modalTop{
       padding:14px 14px 10px;
       border-bottom:1px solid var(--stroke);
@@ -480,22 +446,42 @@
     .modalTitle{font-weight:900; letter-spacing:-0.03em}
     .modalBody{
       padding:12px 14px;
-      max-height:72vh;
+      max-height:70vh;
       overflow:auto;
       display:flex;
       flex-direction:column;
       gap:12px;
     }
-    .modalFoot{padding:12px 14px; border-top:1px solid var(--stroke); display:flex; gap:10px}
 
-    /* Emoji picker (scrollable, never overflow screen) */
+    .toggleRow{
+      display:flex; align-items:center; justify-content:space-between; gap:12px;
+      padding:10px; border:1px solid var(--stroke); border-radius:14px;
+      background: rgba(255,255,255,.02)
+    }
+    .toggleLeft{min-width:0}
+    .toggleName{font-weight:800; font-size:12px}
+    .toggleDesc{color:var(--muted); font-size:11px; margin-top:2px}
+    .switch{
+      width:46px; height:26px; border-radius:999px;
+      border:1px solid var(--stroke2);
+      background: rgba(255,255,255,.06);
+      position:relative; flex:none; cursor:pointer;
+      transition: background .18s var(--ease), border-color .18s var(--ease)
+    }
+    .switch::after{
+      content:""; position:absolute; top:3px; left:3px;
+      width:20px; height:20px; border-radius:50%;
+      background: rgba(255,255,255,.85);
+      transition: transform .18s var(--ease)
+    }
+    .switch.on{background: rgba(255,255,255,.16); border-color: rgba(255,255,255,.22)}
+    .switch.on::after{transform: translateX(20px)}
+
+    /* Emoji picker */
     .emojiWrap{position:relative}
     .emojiPicker{
-      position:absolute;
-      right:0;
-      bottom:54px;
-      width:280px;
-      max-height:240px;
+      position:absolute; right:0; bottom:54px;
+      width:280px; max-height:240px;
       overflow:auto;
       border-radius:16px;
       border:1px solid var(--stroke);
@@ -503,7 +489,7 @@
       box-shadow: var(--shadow2);
       padding:10px;
       display:none;
-      animation: modalIn .18s var(--ease) forwards;
+      animation: modalIn .22s var(--ease) forwards;
     }
     .emojiPicker.show{display:block}
     .emojiGrid{display:grid; grid-template-columns:repeat(8, 1fr); gap:6px}
@@ -516,7 +502,6 @@
       cursor:pointer;
       font-size:16px;
       transition: transform .12s var(--ease), background .12s var(--ease), border-color .12s var(--ease);
-      display:flex; align-items:center; justify-content:center;
     }
     .emojiBtn:hover{transform: translateY(-1px); border-color: rgba(255,255,255,.22); background: rgba(255,255,255,.04)}
     .emojiSearch{
@@ -532,11 +517,42 @@
       font-size:12px;
     }
 
-    /* Footer (always visible) */
+    /* Toasts */
+    .toasts{
+      position:fixed;
+      right:12px;
+      bottom:12px;
+      z-index:90;
+      display:flex;
+      flex-direction:column;
+      gap:10px;
+      pointer-events:none;
+    }
+    .toast{
+      width: min(360px, calc(100vw - 24px));
+      border:1px solid var(--stroke);
+      background: rgba(12,14,18,.88);
+      border-radius:16px;
+      box-shadow: var(--shadow2);
+      padding:10px 12px;
+      display:flex;
+      gap:10px;
+      align-items:flex-start;
+      transform: translateY(10px);
+      opacity:0;
+      animation: toastIn .28s var(--ease) forwards;
+      pointer-events:auto;
+    }
+    @keyframes toastIn{to{transform: translateY(0); opacity:1}}
+    .toastDot{width:10px; height:10px; border-radius:50%; background: #fff; margin-top:5px; opacity:.9}
+    .toastTitle{font-weight:900; font-size:12px; margin:0}
+    .toastMsg{font-size:12px; color:var(--muted); margin-top:2px; line-height:1.35}
+
+    /* Footer always */
     .footer{
       position:fixed;
-      left:14px;
-      bottom:14px;
+      left:12px;
+      bottom:12px;
       z-index:20;
       color: rgba(232,237,243,.75);
       font-size:12px;
@@ -548,16 +564,28 @@
     .footer a{color: rgba(232,237,243,.9); text-decoration:none; border-bottom:1px solid rgba(232,237,243,.18)}
     .footer a:hover{border-bottom-color: rgba(232,237,243,.45)}
 
-    /* Responsive */
+    /* Bottom buttons always visible, no scroll */
+    .sideBottom{
+      margin-top:auto;
+      padding:12px;
+      border-top:1px solid var(--stroke);
+      display:flex;
+      flex-direction:column;
+      gap:10px;
+    }
+    .stack{display:flex; gap:10px}
+    .stack .btn{flex:1}
+
+    /* Mobile */
     @media (max-width: 920px){
       body{overflow:auto}
       .app{flex-direction:column; height:auto; min-height:100%;}
       .sidebar{width:100%; min-width:0}
       .main{width:100%}
-      .footer{position:static; padding:10px 14px}
+      .footer{position:static; padding:10px 12px}
     }
 
-    /* Custom cursor (optional) */
+    /* Custom cursor toggle */
     .cursorHide *{cursor:none !important}
     .trailDot{
       position:fixed;
@@ -571,31 +599,28 @@
       transition: opacity .12s var(--ease);
     }
 
-    /* Reduce motion */
     .reduceMotion *{animation:none !important; transition:none !important}
   </style>
 </head>
 <body>
-  <div class="bgDetail"></div>
+  <div class="bg"></div>
   <div class="noise"></div>
 
   <!-- Login Overlay -->
   <div id="loginOverlay" class="overlay">
     <div class="loginCard">
       <div class="loginTop">
-        <div style="display:flex;align-items:flex-start;gap:10px;min-width:0">
+        <div style="display:flex;align-items:center;gap:10px;min-width:0">
           <div class="logoDot"></div>
           <div style="min-width:0">
             <h1 class="bigTitle">tonkotsu.online</h1>
-            <div style="display:flex;align-items:center;gap:8px;margin-top:8px;flex-wrap:wrap">
-              <div class="betaBadge" id="betaBadgeLogin">beta</div>
-              <div style="font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
-                simple global chat + dms + groups
-              </div>
+            <div style="display:flex;align-items:center;gap:8px;margin-top:6px">
+              <div class="betaBadge" id="betaBadge">beta</div>
+              <div style="font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">simple global chat + dms + groups</div>
             </div>
           </div>
         </div>
-        <div class="betaBadge" style="opacity:.85">v0.9</div>
+        <div class="betaBadge" id="buildPill">v1</div>
       </div>
 
       <div class="loginBody">
@@ -603,12 +628,15 @@
           <b style="color:#e9eff7">How it works</b><br>
           • Leave both fields blank to join as a <b>Guest</b> (limited).<br>
           • Use <b>username + password</b> together to save your account.<br>
-          • Everyone online sees the same global chat in real-time.
+          • Global chat blocks slurs/threats (beta filter).
         </div>
 
         <div class="grid2">
           <input id="username" class="field" placeholder="Username" autocomplete="username" />
-          <input id="password" class="field" placeholder="Password" type="password" autocomplete="current-password" />
+          <div class="fieldWrap">
+            <input id="password" class="field" placeholder="Password" type="password" autocomplete="current-password" style="padding-right:48px" />
+            <button class="eyeBtn" id="togglePass" type="button" title="Show/Hide password">👁</button>
+          </div>
         </div>
 
         <div class="loginActions">
@@ -622,13 +650,8 @@
   <!-- Loading Screen -->
   <div id="loading" class="loading">
     <div class="loader">
-      <div style="display:flex; align-items:center; justify-content:space-between; gap:10px;">
-        <div>
-          <div style="font-weight:900; letter-spacing:-.04em">Entering tonkotsu.online</div>
-          <div style="font-size:12px; color:var(--muted)" id="loaderSub">syncing…</div>
-        </div>
-        <div class="betaBadge" style="opacity:.9">secure</div>
-      </div>
+      <div style="font-weight:900;letter-spacing:-0.03em">Entering tonkotsu.online</div>
+      <div style="font-size:12px;color:var(--muted);margin-top:6px" id="loaderSub">syncing…</div>
       <div class="prog"><div></div></div>
     </div>
   </div>
@@ -641,10 +664,10 @@
           <div class="logoDot"></div>
           <div class="titleWrap">
             <div class="title">tonkotsu.online</div>
-            <div class="betaBadge" id="betaBadgeSide">beta</div>
+            <div class="betaBadge" title="beta hover" id="betaBadgeSide">beta</div>
           </div>
         </div>
-        <div class="mePill" id="mePill" style="display:none">
+        <div class="userPill" title="You" id="mePill" style="display:none">
           <div class="meDot" id="meDot"></div>
           <div class="meName" id="meName">—</div>
         </div>
@@ -658,8 +681,8 @@
 
       <div class="section" id="sideSection"></div>
 
-      <div class="sideBottom">
-        <div class="stack">
+      <div class="sideBottom" id="sideBottom">
+        <div class="stack" id="authButtons">
           <button class="btn" id="settingsBtn">Settings</button>
           <button class="btn" id="logoutBtn">Log out</button>
           <button class="btn" id="loginBtn" style="display:none">Log in</button>
@@ -669,11 +692,11 @@
 
     <main class="main">
       <div class="chatHeader">
-        <div class="left">
+        <div>
           <div class="chatTitle" id="chatTitle">Global chat</div>
           <div class="chatHint" id="chatHint">shared with everyone online</div>
         </div>
-        <div class="betaBadge" id="viewPill">global</div>
+        <button class="btn small ghost" id="backToGlobal" style="display:none">Back</button>
       </div>
 
       <div class="chatBox" id="chatBox"></div>
@@ -681,13 +704,11 @@
       <div class="composer">
         <div class="inputWrap">
           <div class="cooldown" id="cooldownRow" style="display:none">
-            <div style="width:52px" id="cooldownText">0.0s</div>
+            <div style="width:48px" id="cooldownText">0.0s</div>
             <div class="cdBar"><div class="cdFill" id="cdFill"></div></div>
           </div>
-
           <div class="inputRow">
             <textarea id="message" rows="1" placeholder="Type a message…"></textarea>
-
             <div class="emojiWrap">
               <button class="btn small" id="emojiToggle" title="Emoji">🙂</button>
               <div class="emojiPicker" id="emojiPicker">
@@ -695,7 +716,6 @@
                 <div class="emojiGrid" id="emojiGrid"></div>
               </div>
             </div>
-
             <button class="btn small primary" id="sendBtn">Send</button>
           </div>
         </div>
@@ -703,7 +723,7 @@
     </main>
   </div>
 
-  <!-- Popup Modal (NO alerts) -->
+  <!-- Modal -->
   <div class="modalBack" id="modalBack">
     <div class="modal" id="modal">
       <div class="modalTop">
@@ -711,9 +731,11 @@
         <button class="btn small ghost" id="modalClose">Close</button>
       </div>
       <div class="modalBody" id="modalBody"></div>
-      <div class="modalFoot" id="modalFoot" style="display:none"></div>
     </div>
   </div>
+
+  <!-- Toasts -->
+  <div class="toasts" id="toasts"></div>
 
   <!-- Cursor trail -->
   <div id="trailA" class="trailDot"></div>
