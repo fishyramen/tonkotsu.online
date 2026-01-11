@@ -1,222 +1,730 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>tonkotsu.online</title>
-  <link rel="stylesheet" href="/styles.css" />
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+
+  <style>
+    :root{
+      /* Minimal dark */
+      --bg: #0a0c10;
+      --panel: rgba(255,255,255,.03);
+      --panel2: rgba(255,255,255,.02);
+      --stroke: rgba(255,255,255,.08);
+      --stroke2: rgba(255,255,255,.12);
+      --text: #e9eef5;
+      --muted: rgba(233,238,245,.62);
+      --muted2: rgba(233,238,245,.42);
+      --shadow: 0 18px 50px rgba(0,0,0,.55);
+      --shadow2: 0 10px 30px rgba(0,0,0,.45);
+      --radius: 16px;
+      --ease: cubic-bezier(.2,.8,.2,1);
+      --ok: #31d27c;
+      --danger: #ff4d4d;
+
+      /* density (compact default) */
+      --pad: 10px;
+      --font: 12px;
+      --sidebarW: 260px; /* compact default width */
+    }
+
+    *{box-sizing:border-box}
+    html,body{height:100%}
+    body{
+      margin:0;
+      font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      font-size: var(--font);
+      overflow:hidden;
+    }
+
+    /* NO GRADIENTS: subtle dot noise using svg */
+    .bgNoise{
+      position:fixed; inset:0; pointer-events:none; z-index:0;
+      background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160' viewBox='0 0 160 160'><rect width='160' height='160' fill='%230a0c10'/><g opacity='0.22'><circle cx='18' cy='22' r='1' fill='%23ffffff'/><circle cx='86' cy='44' r='1' fill='%23ffffff'/><circle cx='132' cy='70' r='1' fill='%23ffffff'/><circle cx='40' cy='112' r='1' fill='%23ffffff'/><circle cx='118' cy='128' r='1' fill='%23ffffff'/><circle cx='64' cy='84' r='1' fill='%23ffffff'/></g></svg>");
+      background-size: 220px 220px;
+      opacity:.35;
+    }
+
+    /* Centered “app card” like login card */
+    .stage{
+      position:relative;
+      z-index:1;
+      height:100%;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      padding: 18px;
+    }
+    .shell{
+      width: min(1180px, 100%);
+      height: min(720px, calc(100vh - 36px));
+      border-radius: 22px;
+      border: 1px solid var(--stroke);
+      background: rgba(255,255,255,.02);
+      box-shadow: var(--shadow);
+      overflow:hidden;
+      display:flex;
+      flex-direction:column;
+      backdrop-filter: blur(10px);
+      position:relative;
+    }
+
+    /* Dynamic cursor layer */
+    body.cursorOn{ cursor:none; }
+    .cursorDot, .cursorTrail{
+      position:fixed; left:0; top:0; z-index:9999;
+      width:10px; height:10px; border-radius:999px;
+      background: rgba(233,238,245,.92);
+      transform: translate(-50%,-50%);
+      pointer-events:none;
+      opacity:0;
+      transition: opacity .18s var(--ease);
+      mix-blend-mode: difference;
+    }
+    .cursorTrail{
+      width:26px; height:26px;
+      opacity:0;
+      background: rgba(233,238,245,.18);
+      border: 1px solid rgba(233,238,245,.10);
+      backdrop-filter: blur(2px);
+      mix-blend-mode: normal;
+    }
+    .cursorOn .cursorDot, .cursorOn .cursorTrail{ opacity:1; }
+
+    /* Top bar */
+    .topbar{
+      height: 56px;
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--stroke);
+      background: rgba(0,0,0,.12);
+    }
+    .brand{
+      display:flex; flex-direction:column; gap:2px;
+      min-width:0;
+    }
+    .brandName{
+      font-weight: 900;
+      letter-spacing: -0.03em;
+      font-size: 15px;
+      line-height:1.05;
+      white-space:nowrap;
+    }
+    .brandSub{
+      font-size: 12px;
+      color: var(--muted);
+      line-height:1;
+      white-space:nowrap;
+    }
+
+    .topRight{
+      display:flex; align-items:center; gap:10px;
+      min-width:0;
+    }
+    .pillUser{
+      display:flex; align-items:center; gap:8px;
+      padding: 6px 10px;
+      border: 1px solid var(--stroke);
+      border-radius: 999px;
+      background: rgba(255,255,255,.02);
+      max-width: 220px;
+      white-space:nowrap;
+      overflow:hidden;
+      text-overflow:ellipsis;
+    }
+    .userName{
+      font-weight:800;
+      overflow:hidden; text-overflow:ellipsis;
+    }
+
+    .iconBtn{
+      width: 36px; height: 36px;
+      display:inline-flex; align-items:center; justify-content:center;
+      border-radius: 12px;
+      border: 1px solid var(--stroke);
+      background: rgba(255,255,255,.02);
+      color: var(--text);
+      cursor:pointer;
+      transition: transform .12s var(--ease), border-color .12s var(--ease), background .12s var(--ease);
+      position:relative;
+    }
+    .iconBtn:hover{ transform: translateY(-1px); border-color: rgba(255,255,255,.18); background: rgba(255,255,255,.03); }
+    .badge{
+      position:absolute;
+      top: -6px; right: -6px;
+      min-width: 18px; height: 18px;
+      padding: 0 6px;
+      border-radius: 999px;
+      background: rgba(255,77,77,.18);
+      border: 1px solid rgba(255,77,77,.40);
+      color: #ffd8d8;
+      font-size: 11px;
+      font-weight: 900;
+      display:none;
+      align-items:center;
+      justify-content:center;
+    }
+    .badge.show{ display:flex; }
+
+    /* Content layout */
+    .content{
+      flex:1;
+      min-height:0;
+      display:flex;
+    }
+    .sidebar{
+      width: var(--sidebarW);
+      min-width: 220px;
+      border-right: 1px solid var(--stroke);
+      background: rgba(255,255,255,.015);
+      display:flex;
+      flex-direction:column;
+      min-height:0;
+    }
+    .main{
+      flex:1;
+      min-width:0;
+      display:flex;
+      flex-direction:column;
+      min-height:0;
+      background: rgba(0,0,0,.10);
+    }
+
+    /* Sidebar header buttons */
+    .sideTop{
+      padding: var(--pad);
+      display:flex;
+      flex-direction:column;
+      gap: 10px;
+      border-bottom: 1px solid var(--stroke);
+    }
+    .tabs{
+      display:flex;
+      gap:8px;
+    }
+    .tab{
+      flex:1;
+      padding: 8px 10px;
+      border-radius: 12px;
+      border: 1px solid var(--stroke);
+      background: rgba(255,255,255,.02);
+      color: var(--text);
+      font-weight: 800;
+      font-size: 12px;
+      cursor:pointer;
+      transition: transform .12s var(--ease), border-color .12s var(--ease), background .12s var(--ease);
+    }
+    .tab:hover{ transform: translateY(-1px); border-color: rgba(255,255,255,.18); }
+    .tab.active{
+      background: rgba(255,255,255,.06);
+      border-color: rgba(255,255,255,.16);
+    }
+
+    .list{
+      padding: var(--pad);
+      display:flex;
+      flex-direction:column;
+      gap: 8px;
+      overflow:auto;
+      min-height:0;
+    }
+
+    .row{
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:10px;
+      padding: 10px;
+      border-radius: 14px;
+      border: 1px solid var(--stroke);
+      background: rgba(255,255,255,.02);
+      cursor:pointer;
+      transition: transform .12s var(--ease), border-color .12s var(--ease), background .12s var(--ease);
+      user-select:none;
+    }
+    .row:hover{ transform: translateY(-1px); border-color: rgba(255,255,255,.18); background: rgba(255,255,255,.03); }
+    .rowLeft{ display:flex; flex-direction:column; gap:2px; min-width:0; }
+    .rowTitle{
+      font-weight: 900;
+      font-size: 12px;
+      white-space:nowrap;
+      overflow:hidden;
+      text-overflow:ellipsis;
+      max-width: 100%;
+    }
+    .rowSub{
+      font-size: 11px;
+      color: var(--muted);
+      white-space:nowrap;
+      overflow:hidden;
+      text-overflow:ellipsis;
+      max-width: 100%;
+    }
+
+    /* Chat area */
+    .chatTop{
+      padding: var(--pad);
+      border-bottom: 1px solid var(--stroke);
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:10px;
+    }
+    .chatTitle{
+      font-weight: 900;
+      font-size: 13px;
+      white-space:nowrap;
+      overflow:hidden;
+      text-overflow:ellipsis;
+      max-width: 100%;
+    }
+    .chatHint{
+      color: var(--muted);
+      font-size: 11px;
+      margin-top: 2px;
+    }
+
+    .chatBox{
+      flex:1;
+      min-height:0;
+      padding: var(--pad);
+      overflow:auto;
+      display:flex;
+      flex-direction:column;
+      gap: 10px;
+    }
+
+    .msg{
+      padding: 10px 12px;
+      border-radius: 14px;
+      border: 1px solid rgba(255,255,255,.10);
+      background: rgba(255,255,255,.02);
+      transition: transform .12s var(--ease), border-color .12s var(--ease);
+    }
+    .msg:hover{ transform: translateY(-1px); border-color: rgba(255,255,255,.16); }
+    .meta{
+      display:flex;
+      gap: 8px;
+      align-items:baseline;
+      flex-wrap:wrap;
+    }
+    .u{
+      font-weight: 900;
+      font-size: 12px;
+      cursor:pointer;
+      white-space:nowrap;
+    }
+    .t{ font-size: 11px; color: var(--muted); white-space:nowrap; }
+    .body{
+      margin-top: 4px;
+      white-space: pre-wrap;
+      word-break: break-word;
+      line-height: 1.35;
+      color: rgba(233,238,245,.92);
+    }
+
+    .composer{
+      border-top: 1px solid var(--stroke);
+      padding: var(--pad);
+      display:flex;
+      gap: 10px;
+      align-items:flex-end;
+      background: rgba(0,0,0,.12);
+    }
+    textarea{
+      flex:1;
+      min-width:0;
+      resize:none;
+      border-radius: 14px;
+      border: 1px solid var(--stroke);
+      background: rgba(255,255,255,.02);
+      color: var(--text);
+      padding: 10px 12px;
+      font-family: inherit;
+      font-size: 13px;
+      outline:none;
+      min-height: 40px;
+      max-height: 120px;
+      overflow:auto;
+    }
+    .btn{
+      border-radius: 14px;
+      border: 1px solid var(--stroke);
+      background: rgba(255,255,255,.03);
+      color: var(--text);
+      font-weight: 900;
+      padding: 10px 14px;
+      cursor:pointer;
+      transition: transform .12s var(--ease), border-color .12s var(--ease), background .12s var(--ease);
+    }
+    .btn:hover{ transform: translateY(-1px); border-color: rgba(255,255,255,.18); background: rgba(255,255,255,.04); }
+    .btn.primary{ background: rgba(255,255,255,.07); }
+
+    /* Footer (inside app card, always at bottom, never overlapping) */
+    .footer{
+      height: 46px;
+      border-top: 1px solid var(--stroke);
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      padding: 0 14px;
+      color: var(--muted);
+      font-size: 12px;
+      background: rgba(0,0,0,.10);
+    }
+    .footer a{
+      color: rgba(233,238,245,.78);
+      text-decoration:none;
+      border-bottom: 1px solid rgba(233,238,245,.18);
+    }
+    .footer a:hover{ border-bottom-color: rgba(233,238,245,.40); }
+
+    /* Login overlay */
+    .overlay{
+      position:fixed; inset:0; z-index:100;
+      display:flex; align-items:center; justify-content:center;
+      padding: 18px;
+    }
+    .overlay.hidden{ display:none; }
+
+    .loginCard{
+      width: min(520px, 100%);
+      border-radius: 22px;
+      border: 1px solid var(--stroke);
+      background: rgba(10,12,16,.80);
+      box-shadow: var(--shadow);
+      overflow:hidden;
+      backdrop-filter: blur(10px);
+      transform: translateY(10px) scale(.985);
+      opacity: 0;
+      animation: popIn .35s var(--ease) forwards;
+      position:relative;
+    }
+    @keyframes popIn{ to{ transform: translateY(0) scale(1); opacity:1; } }
+
+    /* “popup” hover animation on the whole card */
+    .loginCard:hover{ transform: translateY(-1px) scale(1.01); transition: transform .18s var(--ease); }
+
+    .loginTop{
+      padding: 16px;
+      border-bottom: 1px solid var(--stroke);
+      display:flex; align-items:flex-start; justify-content:space-between; gap: 10px;
+    }
+    .bigTitle{
+      margin:0;
+      font-size: 28px;
+      font-weight: 950;
+      letter-spacing: -0.05em;
+      line-height:1;
+    }
+    .smallSub{
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .loginBody{
+      padding: 14px 16px 16px;
+      display:flex;
+      flex-direction:column;
+      gap: 10px;
+    }
+    .grid2{ display:grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .fieldWrap{ position:relative; }
+    .field{
+      width:100%;
+      border-radius: 14px;
+      border: 1px solid var(--stroke);
+      background: rgba(255,255,255,.02);
+      color: var(--text);
+      padding: 11px 12px;
+      font-size: 13px;
+      outline:none;
+    }
+    .eyeBtn{
+      position:absolute;
+      right: 10px;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 38px; height: 38px;
+      border-radius: 12px;
+      border: 1px solid var(--stroke);
+      background: rgba(255,255,255,.02);
+      color: var(--text);
+      cursor:pointer;
+      display:flex; align-items:center; justify-content:center;
+      transition: transform .12s var(--ease), border-color .12s var(--ease), background .12s var(--ease);
+      user-select:none;
+    }
+    .eyeBtn:hover{ transform: translateY(-50%) scale(1.02); border-color: rgba(255,255,255,.18); background: rgba(255,255,255,.03); }
+
+    .loginActions{ display:flex; gap: 10px; }
+    .loginActions .btn{ flex:1; }
+
+    /* Loading */
+    .loading{
+      position:fixed; inset:0; z-index:110;
+      display:none; align-items:center; justify-content:center;
+      background: rgba(0,0,0,.55);
+      backdrop-filter: blur(10px);
+      padding: 18px;
+    }
+    .loading.show{ display:flex; }
+    .loader{
+      width: min(520px, 100%);
+      border-radius: 22px;
+      border: 1px solid var(--stroke);
+      background: rgba(10,12,16,.82);
+      box-shadow: var(--shadow);
+      padding: 16px;
+      transform: translateY(10px);
+      opacity:0;
+      animation: popIn .25s var(--ease) forwards;
+    }
+    .prog{ margin-top: 12px; height: 10px; border-radius: 999px; background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.08); overflow:hidden; }
+    .prog > div{ height:100%; width: 30%; background: rgba(255,255,255,.16); animation: move 1.05s ease-in-out infinite; }
+    @keyframes move{ 0%{ transform: translateX(-40%);} 50%{ transform: translateX(170%);} 100%{ transform: translateX(520%);} }
+
+    /* Modal (single close button only) */
+    .modalBack{
+      position:fixed; inset:0; z-index:120;
+      display:none; align-items:center; justify-content:center;
+      background: rgba(0,0,0,.55);
+      backdrop-filter: blur(10px);
+      padding: 18px;
+    }
+    .modalBack.show{ display:flex; }
+    .modal{
+      width: min(560px, 100%);
+      border-radius: 22px;
+      border: 1px solid var(--stroke);
+      background: rgba(10,12,16,.88);
+      box-shadow: var(--shadow);
+      overflow:hidden;
+      transform: translateY(10px) scale(.99);
+      opacity:0;
+      animation: modalIn .22s var(--ease) forwards;
+    }
+    @keyframes modalIn{ to{ transform: translateY(0) scale(1); opacity:1; } }
+    .modalTop{
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--stroke);
+      display:flex; align-items:center; justify-content:space-between;
+      gap: 10px;
+    }
+    .modalTitle{ font-weight: 950; letter-spacing: -0.03em; }
+    .modalClose{
+      width: 36px; height: 36px;
+      border-radius: 12px;
+      border: 1px solid var(--stroke);
+      background: rgba(255,255,255,.02);
+      color: var(--text);
+      cursor:pointer;
+      transition: transform .12s var(--ease), border-color .12s var(--ease), background .12s var(--ease);
+    }
+    .modalClose:hover{ transform: translateY(-1px); border-color: rgba(255,255,255,.18); background: rgba(255,255,255,.03); }
+    .modalBody{
+      padding: 14px;
+      max-height: 70vh;
+      overflow:auto;
+      display:flex;
+      flex-direction:column;
+      gap: 12px;
+    }
+
+    /* Toasts */
+    .toasts{
+      position:fixed;
+      right: 14px;
+      bottom: 14px;
+      z-index: 130;
+      display:flex;
+      flex-direction:column;
+      gap: 10px;
+      pointer-events:none;
+    }
+    .toast{
+      width: min(360px, calc(100vw - 28px));
+      border-radius: 16px;
+      border: 1px solid var(--stroke);
+      background: rgba(10,12,16,.88);
+      box-shadow: var(--shadow2);
+      padding: 10px 12px;
+      display:flex;
+      gap: 10px;
+      align-items:flex-start;
+      transform: translateY(10px);
+      opacity:0;
+      animation: toastIn .18s var(--ease) forwards;
+      pointer-events:auto;
+    }
+    @keyframes toastIn{ to{ transform: translateY(0); opacity:1; } }
+    .toastDot{ width: 10px; height: 10px; border-radius: 999px; background: rgba(233,238,245,.9); margin-top: 5px; opacity: .95; }
+    .toastTitle{ font-weight: 950; font-size: 12px; }
+    .toastMsg{ margin-top: 2px; color: var(--muted); font-size: 12px; line-height: 1.35; }
+
+    /* Mobile */
+    @media (max-width: 980px){
+      body{ overflow:auto; }
+      .shell{ height:auto; min-height: calc(100vh - 36px); }
+      .content{ flex-direction:column; }
+      .sidebar{ width:100%; min-width:0; border-right:none; border-bottom:1px solid var(--stroke); }
+      :root{ --sidebarW: 100%; }
+    }
+  </style>
 </head>
+
 <body>
-  <div id="bg"></div>
-  <div id="cursorTrail" class="cursor-trail" aria-hidden="true"></div>
+  <div class="bgNoise"></div>
 
-  <!-- Centered app card -->
-  <div class="app-shell">
-    <header class="topbar">
-      <div class="brand">
-        <div class="brandDot"></div>
-        <div class="brandText">
-          <div class="brandName">tonkotsu</div>
-          <div class="brandSub" id="brandSub">chat</div>
+  <!-- Dynamic cursor -->
+  <div id="cursorTrail" class="cursorTrail" aria-hidden="true"></div>
+  <div id="cursorDot" class="cursorDot" aria-hidden="true"></div>
+
+  <!-- Login Overlay -->
+  <div id="loginOverlay" class="overlay">
+    <div class="loginCard" id="loginCard">
+      <div class="loginTop">
+        <div style="min-width:0">
+          <h1 class="bigTitle">tonkotsu.online</h1>
+          <div class="smallSub">global chat • dms • groups</div>
         </div>
+        <div style="color:var(--muted);font-weight:900;font-size:12px">beta</div>
       </div>
 
-      <div class="topActions">
-        <button class="iconBtn" id="inboxBtn" title="Inbox">
-          <span class="iconBell" aria-hidden="true"></span>
-          <span class="badge" id="inboxBadge" hidden>0</span>
-        </button>
-
-        <button class="iconBtn" id="settingsBtn" title="Settings">
-          <span class="iconGear" aria-hidden="true"></span>
-        </button>
-
-        <div class="mePill" id="mePill" title="Profile">
-          <span id="meName">Guest0000</span>
-          <span class="miniBadge" id="meLevel" hidden>Lv 1</span>
-        </div>
-      </div>
-    </header>
-
-    <main class="layout">
-      <!-- LEFT -->
-      <aside class="sidebar">
-        <div class="panel">
-          <div class="panelTitle">Messages</div>
-          <div class="tabs">
-            <button class="tabBtn active" data-view="global" id="tabGlobal">
-              Global
-            </button>
-            <button class="tabBtn" data-view="dms" id="tabDMs">
-              DMs <span class="pill" id="dmPill" hidden>0</span>
-            </button>
-            <button class="tabBtn" data-view="groups" id="tabGroups">
-              GCs <span class="pill" id="gcPill" hidden>0</span>
-            </button>
-          </div>
+      <div class="loginBody">
+        <div style="color:var(--muted);font-size:12px;line-height:1.45">
+          Leave fields blank to join as <b style="color:rgba(233,238,245,.90)">Guest</b> (limited).<br>
+          Use <b style="color:rgba(233,238,245,.90)">username + password</b> to create/login.
         </div>
 
-        <div class="panel">
-          <div class="panelTitle">Online</div>
-          <div class="list" id="onlineList"></div>
-        </div>
-
-        <footer class="sideFooter">
-          <a class="kofi" href="https://ko-fi.com/fishy_x1" target="_blank" rel="noreferrer">
-            Support on Ko-fi
-          </a>
-          <div class="copyright">© <span id="year"></span> tonkotsu — All rights reserved.</div>
-        </footer>
-      </aside>
-
-      <!-- RIGHT -->
-      <section class="content">
-        <!-- LOGIN CARD (shown when logged out) -->
-        <div class="card loginCard" id="loginCard">
-          <div class="cardTitle">Welcome</div>
-          <div class="cardSub">Login or continue as guest</div>
-
-          <div class="formRow">
-            <input id="username" class="input" placeholder="Username" autocomplete="username" />
-          </div>
-
-          <div class="formRow passwordRow">
-            <input id="password" class="input" type="password" placeholder="Password" autocomplete="current-password" />
-            <button class="eyeBtn" id="togglePw" title="Show/Hide password" aria-label="Show/Hide password">
-              <!-- simple eye icon -->
-              <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
-                <path d="M12 5C6.5 5 2.1 8.4 1 12c1.1 3.6 5.5 7 11 7s9.9-3.4 11-7c-1.1-3.6-5.5-7-11-7Zm0 11a4 4 0 1 1 0-8 4 4 0 0 1 0 8Z"/>
+        <div class="grid2">
+          <input id="username" class="field" placeholder="Username" autocomplete="username" />
+          <div class="fieldWrap">
+            <input id="password" class="field" placeholder="Password" type="password" autocomplete="current-password" style="padding-right:52px" />
+            <!-- eye symbol, not emoji -->
+            <button class="eyeBtn" id="togglePass" type="button" title="Show/Hide password">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path d="M2.5 12s3.5-7 9.5-7 9.5 7 9.5 7-3.5 7-9.5 7-9.5-7-9.5-7Z" stroke="rgba(233,238,245,.85)" stroke-width="2"/>
+                <path d="M12 15.5A3.5 3.5 0 1 0 12 8.5a3.5 3.5 0 0 0 0 7Z" stroke="rgba(233,238,245,.85)" stroke-width="2"/>
               </svg>
             </button>
           </div>
-
-          <div class="formRow twoCol">
-            <button class="btn primary" id="loginBtn">Login / Register</button>
-            <button class="btn" id="guestBtn">Continue as Guest</button>
-          </div>
-
-          <div class="hint" id="loginHint"></div>
         </div>
 
-        <!-- CHAT AREA -->
-        <div class="card chatCard" id="chatCard" hidden>
-          <div class="chatHeader">
-            <div>
-              <div class="chatTitle" id="chatTitle">Global</div>
-              <div class="chatSubtitle" id="chatSubtitle">Public chat</div>
-            </div>
+        <div class="loginActions">
+          <button class="btn primary" id="joinBtn">Login / Register</button>
+          <button class="btn" id="guestBtn">Continue as Guest</button>
+        </div>
+      </div>
+    </div>
+  </div>
 
-            <div class="xpWrap" id="xpWrap" hidden>
-              <div class="xpTop">
-                <span class="xpLabel" id="xpLabel">Level 1</span>
-                <span class="xpNums" id="xpNums">0 / 120</span>
-              </div>
-              <div class="xpBar">
-                <div class="xpFill" id="xpFill" style="width:0%"></div>
-              </div>
+  <!-- Loading -->
+  <div id="loading" class="loading">
+    <div class="loader">
+      <div style="font-weight:950;letter-spacing:-0.03em">Entering tonkotsu.online</div>
+      <div style="font-size:12px;color:var(--muted);margin-top:6px" id="loaderSub">syncing…</div>
+      <div class="prog"><div></div></div>
+    </div>
+  </div>
+
+  <!-- App -->
+  <div class="stage">
+    <div class="shell" id="shell" style="display:none">
+      <header class="topbar">
+        <div class="brand">
+          <div class="brandName">tonkotsu.online</div>
+          <div class="brandSub" id="brandSub">chat</div>
+        </div>
+
+        <div class="topRight">
+          <button class="iconBtn" id="inboxBtn" title="Inbox">
+            <!-- bell -->
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M6 9a6 6 0 0 1 12 0c0 7 3 7 3 7H3s3 0 3-7Z" stroke="rgba(233,238,245,.9)" stroke-width="2" stroke-linecap="round"/>
+              <path d="M10 20a2 2 0 0 0 4 0" stroke="rgba(233,238,245,.9)" stroke-width="2" stroke-linecap="round"/>
+            </svg>
+            <div class="badge" id="inboxBadge">0</div>
+          </button>
+
+          <button class="iconBtn" id="settingsBtn" title="Settings">
+            <!-- gear -->
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z" stroke="rgba(233,238,245,.9)" stroke-width="2"/>
+              <path d="M19.4 15a8 8 0 0 0 .1-2l2-1.2-2-3.4-2.3.6a8 8 0 0 0-1.7-1l-.3-2.4H11l-.3 2.4a8 8 0 0 0-1.7 1L6.7 8.4 4.7 11.8l2 1.2a8 8 0 0 0 .1 2l-2 1.2 2 3.4 2.3-.6a8 8 0 0 0 1.7 1l.3 2.4h4.2l.3-2.4a8 8 0 0 0 1.7-1l2.3.6 2-3.4-2-1.2Z" stroke="rgba(233,238,245,.55)" stroke-width="1.6" stroke-linejoin="round"/>
+            </svg>
+          </button>
+
+          <div class="pillUser" id="mePill" style="display:none">
+            <span class="userName" id="meName">—</span>
+          </div>
+
+          <button class="btn" id="logoutBtn" style="display:none">Log out</button>
+          <button class="btn" id="loginBtn" style="display:none">Log in</button>
+        </div>
+      </header>
+
+      <div class="content">
+        <aside class="sidebar">
+          <div class="sideTop">
+            <div class="tabs">
+              <button class="tab active" id="tabGlobal">Global</button>
+              <button class="tab" id="tabMessages">Messages</button>
             </div>
           </div>
 
-          <div class="messages" id="messages"></div>
+          <div class="list" id="sideList"></div>
+        </aside>
 
-          <div class="composer">
-            <input class="input" id="messageInput" placeholder="Type a message..." />
+        <main class="main">
+          <div class="chatTop">
+            <div style="min-width:0">
+              <div class="chatTitle" id="chatTitle">Global</div>
+              <div class="chatHint" id="chatHint">online users</div>
+            </div>
+            <button class="btn" id="chatActionBtn" style="display:none">Manage</button>
+          </div>
+
+          <div class="chatBox" id="chatBox"></div>
+
+          <div class="composer" id="composer">
+            <textarea id="message" rows="1" placeholder="Type a message…"></textarea>
             <button class="btn primary" id="sendBtn">Send</button>
           </div>
-        </div>
-      </section>
-    </main>
-  </div>
-
-  <!-- Modals -->
-  <div class="modalOverlay" id="overlay" hidden></div>
-
-  <div class="modal" id="settingsModal" hidden>
-    <div class="modalHeader">
-      <div class="modalTitle">Settings</div>
-      <button class="iconBtn" id="closeSettings" title="Close"><span class="iconX"></span></button>
-    </div>
-
-    <div class="modalBody">
-      <div class="settingRow">
-        <div class="settingText">
-          <div class="settingName">Theme</div>
-          <div class="settingDesc">Minimal dark by default.</div>
-        </div>
-        <select id="themeSelect" class="select">
-          <option value="dark">dark</option>
-          <option value="vortex">vortex</option>
-          <option value="abyss">abyss</option>
-          <option value="carbon">carbon</option>
-        </select>
+        </main>
       </div>
 
-      <div class="settingRow">
-        <div class="settingText">
-          <div class="settingName">Compactness</div>
-          <div class="settingDesc">Tighten spacing + font scale.</div>
-        </div>
-        <input id="density" class="range" type="range" min="0" max="1" step="0.01" />
-      </div>
-
-      <div class="settingRow">
-        <div class="settingText">
-          <div class="settingName">Sidebar width</div>
-          <div class="settingDesc">Make left panel narrower/wider.</div>
-        </div>
-        <input id="sidebar" class="range" type="range" min="0.16" max="0.32" step="0.01" />
-      </div>
-
-      <div class="settingRow">
-        <div class="settingText">
-          <div class="settingName">Custom cursor</div>
-          <div class="settingDesc">Dynamic cursor + short trail.</div>
-        </div>
-        <label class="switch">
-          <input type="checkbox" id="customCursor" />
-          <span class="slider"></span>
-        </label>
-      </div>
-
-      <div class="settingRow">
-        <div class="settingText">
-          <div class="settingName">Ping sound</div>
-          <div class="settingDesc">Play a clean ping for DMs/GCs/inbox.</div>
-        </div>
-        <label class="switch">
-          <input type="checkbox" id="pingSound" />
-          <span class="slider"></span>
-        </label>
-      </div>
-
-      <div class="settingRow">
-        <div class="settingText">
-          <div class="settingName">Ping volume</div>
-          <div class="settingDesc">Smooth slider.</div>
-        </div>
-        <input id="pingVolume" class="range" type="range" min="0" max="1" step="0.01" />
-      </div>
+      <footer class="footer">
+        <div>© <span id="year"></span> tonkotsu — All rights reserved.</div>
+        <div><a href="https://ko-fi.com/fishy_x1" target="_blank" rel="noreferrer">Support on Ko-fi</a></div>
+      </footer>
     </div>
   </div>
 
-  <div class="modal" id="inboxModal" hidden>
-    <div class="modalHeader">
-      <div class="modalTitle">Inbox</div>
-      <button class="iconBtn" id="closeInbox" title="Close"><span class="iconX"></span></button>
-    </div>
-    <div class="modalBody">
-      <div class="inboxSection">
-        <div class="sectionTitle">Friend requests</div>
-        <div id="friendRequests"></div>
+  <!-- Modal -->
+  <div class="modalBack" id="modalBack">
+    <div class="modal">
+      <div class="modalTop">
+        <div class="modalTitle" id="modalTitle">Popup</div>
+        <button class="modalClose" id="modalClose" title="Close" aria-label="Close">
+          ✕
+        </button>
       </div>
-      <div class="inboxSection">
-        <div class="sectionTitle">Group chat invites</div>
-        <div id="groupInvites"></div>
-      </div>
+      <div class="modalBody" id="modalBody"></div>
     </div>
   </div>
 
-  <div class="toastHost" id="toastHost"></div>
+  <!-- Toasts -->
+  <div class="toasts" id="toasts"></div>
 
   <script src="/socket.io/socket.io.js"></script>
   <script src="/script.js"></script>
