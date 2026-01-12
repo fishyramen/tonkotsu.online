@@ -1,1 +1,764 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>tonkotsu.online</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@500;600;700;800;900&display=swap" rel="stylesheet">
 
+  <style>
+    :root{
+      --bg:#07090c;
+      --panel: rgba(255,255,255,.03);
+      --stroke: rgba(255,255,255,.08);
+      --stroke2: rgba(255,255,255,.12);
+      --text: #e9eef5;
+      --muted:#a5afbc;
+      --muted2:#7f8a98;
+
+      --ok:#2fe57a;
+      --danger:#ff5a6a;
+      --warn:#ffcc66;
+
+      --radius:18px;
+      --shadow: 0 24px 80px rgba(0,0,0,.65);
+      --shadow2: 0 12px 38px rgba(0,0,0,.55);
+      --ease: cubic-bezier(.2,.8,.2,1);
+
+      --pad: 12px;
+      --font: 13px;
+    }
+
+    *{box-sizing:border-box}
+    html,body{height:100%}
+    body{
+      margin:0;
+      font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      overflow:hidden;
+      font-size: var(--font);
+      cursor: none; /* custom cursor always; JS can toggle it */
+    }
+
+    /* Dotted dark background */
+    .bgDots{
+      position:fixed; inset:0; pointer-events:none;
+      background:
+        radial-gradient(circle at 1px 1px, rgba(255,255,255,.08) 1px, transparent 1px);
+      background-size: 22px 22px;
+      opacity:.22;
+      filter: blur(.1px);
+    }
+    .vignette{
+      position:fixed; inset:-25%;
+      pointer-events:none;
+      background: radial-gradient(circle at 50% 40%, transparent 35%, rgba(0,0,0,.78) 78%);
+      opacity:.9;
+    }
+
+    /* Centered App Frame (smaller than full screen) */
+    .frame{
+      position:relative;
+      height:100%;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      padding:20px;
+    }
+    .appCard{
+      width:min(1120px, 92vw);
+      height:min(720px, 86vh);
+      border-radius: 22px;
+      background: rgba(10,12,16,.62);
+      border:1px solid var(--stroke);
+      box-shadow: var(--shadow);
+      overflow:hidden;
+      display:none;
+      transform: translateY(10px) scale(.99);
+      opacity:0;
+      animation: popIn .42s var(--ease) forwards;
+      backdrop-filter: blur(10px);
+    }
+    .appCard.show{display:flex}
+    @keyframes popIn{to{transform: translateY(0) scale(1); opacity:1}}
+
+    /* Login overlay */
+    .overlay{
+      position:fixed; inset:0;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      padding:20px;
+      z-index:60;
+    }
+    .overlay.hidden{display:none}
+    .loginCard{
+      width:min(560px, 92vw);
+      border-radius: 22px;
+      background: rgba(10,12,16,.74);
+      border:1px solid var(--stroke);
+      box-shadow: var(--shadow);
+      overflow:hidden;
+      transform: translateY(10px) scale(.99);
+      opacity:0;
+      animation: popIn .42s var(--ease) forwards;
+      backdrop-filter: blur(10px);
+    }
+    .loginTop{
+      padding:16px 16px 12px;
+      border-bottom:1px solid rgba(255,255,255,.06);
+      display:flex; align-items:center; justify-content:space-between; gap:10px;
+    }
+    .bigTitle{
+      margin:0;
+      font-size: 30px;
+      font-weight: 950;
+      letter-spacing: -0.05em;
+      line-height:1.05;
+      color: var(--text);
+    }
+    .subRow{
+      margin-top:8px;
+      display:flex; gap:10px; align-items:center;
+      color: rgba(233,238,245,.62);
+      font-weight: 800;
+      font-size: 12px;
+    }
+    .pill{
+      font-size:11px;
+      font-weight:900;
+      color: rgba(233,238,245,.78);
+      border:1px solid rgba(255,255,255,.10);
+      padding:4px 10px;
+      border-radius:999px;
+      background: rgba(255,255,255,.03);
+      user-select:none;
+    }
+
+    .loginBody{padding:14px 16px 16px; display:flex; flex-direction:column; gap:12px}
+    .tutorialBox{
+      border:1px solid rgba(255,255,255,.08);
+      background: rgba(255,255,255,.02);
+      border-radius: 16px;
+      padding:12px;
+      color: rgba(233,238,245,.62);
+      font-weight: 850;
+      line-height:1.4;
+      font-size: 12px;
+    }
+    .grid2{display:grid; grid-template-columns: 1fr 1fr; gap:10px}
+    .fieldWrap{position:relative}
+    .field{
+      width:100%;
+      border:1px solid rgba(255,255,255,.10);
+      background: rgba(255,255,255,.02);
+      color: var(--text);
+      border-radius: 16px;
+      padding:12px 12px;
+      font: inherit;
+      font-weight: 850;
+      outline:none;
+    }
+    .field::placeholder{color: rgba(233,238,245,.35); font-weight:800}
+
+    .eyeBtn{
+      position:absolute;
+      right:10px;
+      top:50%;
+      transform: translateY(-50%);
+      width:36px; height:36px;
+      border-radius: 14px;
+      border:1px solid rgba(255,255,255,.10);
+      background: rgba(255,255,255,.03);
+      color: rgba(233,238,245,.92);
+      cursor:pointer;
+      display:flex; align-items:center; justify-content:center;
+      transition: transform .12s var(--ease), background .12s var(--ease), border-color .12s var(--ease);
+    }
+    .eyeBtn:hover{transform: translateY(-50%) scale(1.03); border-color: rgba(255,255,255,.18); background: rgba(255,255,255,.05)}
+
+    .loginActions{display:flex; gap:10px}
+    .loginActions .btn{flex:1}
+
+    /* Buttons */
+    .btn{
+      appearance:none;
+      border:none;
+      background: rgba(255,255,255,.04);
+      border:1px solid rgba(255,255,255,.10);
+      color: var(--text);
+      font: inherit;
+      font-weight: 950;
+      padding:11px 12px;
+      border-radius: 16px;
+      cursor:pointer;
+      transition: transform .12s var(--ease), background .12s var(--ease), border-color .12s var(--ease);
+      display:flex; align-items:center; justify-content:center; gap:8px;
+      user-select:none;
+      white-space:nowrap;
+    }
+    .btn:hover{transform: translateY(-1px); border-color: rgba(255,255,255,.18); background: rgba(255,255,255,.06)}
+    .btn.primary{background: rgba(255,255,255,.08)}
+    .btn.small{padding:9px 10px; border-radius: 14px; font-size: 12px}
+    .btn.ghost{background: transparent}
+    .btn.danger{border-color: rgba(255,90,106,.30); color: rgba(255,90,106,.95)}
+
+    /* Main app layout */
+    .appInner{
+      width:100%;
+      height:100%;
+      display:flex;
+      gap:12px;
+      padding:12px;
+    }
+    .panel{
+      background: rgba(255,255,255,.02);
+      border:1px solid rgba(255,255,255,.08);
+      border-radius: 18px;
+      box-shadow: var(--shadow2);
+      overflow:hidden;
+      min-height:0;
+      display:flex;
+      flex-direction:column;
+    }
+    .sidebar{width: 340px; min-width: 320px}
+    .main{flex:1; min-width:0}
+
+    .sideTop{
+      padding:12px;
+      border-bottom:1px solid rgba(255,255,255,.06);
+      display:flex; align-items:center; justify-content:space-between; gap:10px;
+    }
+    .brand{
+      font-weight: 950;
+      letter-spacing: -0.04em;
+      font-size: 14px;
+      white-space:nowrap;
+      overflow:hidden;
+      text-overflow:ellipsis;
+    }
+
+    .inboxBtn{
+      position:relative;
+      display:flex; align-items:center; justify-content:center;
+      width:40px; height:40px;
+      border-radius: 14px;
+      border:1px solid rgba(255,255,255,.10);
+      background: rgba(255,255,255,.03);
+      cursor:pointer;
+      transition: transform .12s var(--ease), background .12s var(--ease), border-color .12s var(--ease);
+      user-select:none;
+    }
+    .inboxBtn:hover{transform: translateY(-1px); border-color: rgba(255,255,255,.18); background: rgba(255,255,255,.05)}
+    .badge{
+      position:absolute;
+      top:-6px;
+      right:-6px;
+      min-width:20px;
+      height:20px;
+      padding:0 6px;
+      border-radius: 999px;
+      background: rgba(255,90,106,.18);
+      border:1px solid rgba(255,90,106,.38);
+      color: rgba(255,228,232,.95);
+      font-size: 11px;
+      font-weight: 950;
+      display:none;
+      align-items:center;
+      justify-content:center;
+    }
+    .badge.show{display:inline-flex}
+
+    .sectionTitle{
+      padding:10px 12px 8px;
+      font-weight: 950;
+      font-size: 11px;
+      color: rgba(233,238,245,.70);
+      border-top:1px solid rgba(255,255,255,.06);
+    }
+
+    .list{
+      padding:10px 12px 12px;
+      display:flex;
+      flex-direction:column;
+      gap:8px;
+      overflow:auto;
+      min-height:0;
+    }
+
+    .row{
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:10px;
+      padding:10px 10px;
+      border-radius: 16px;
+      border:1px solid rgba(255,255,255,.08);
+      background: rgba(255,255,255,.02);
+      cursor:pointer;
+      transition: transform .12s var(--ease), background .12s var(--ease), border-color .12s var(--ease);
+    }
+    .row:hover{transform: translateY(-1px); border-color: rgba(255,255,255,.14); background: rgba(255,255,255,.04)}
+    .rowLeft{display:flex; align-items:center; gap:10px; min-width:0}
+    .dot{
+      width:9px; height:9px; border-radius:50%;
+      background: rgba(255,255,255,.26);
+      flex:0 0 auto;
+    }
+    .dot.on{background: var(--ok); box-shadow: 0 0 0 4px rgba(47,229,122,.12)}
+    .nameCol{min-width:0; display:flex; flex-direction:column}
+    .rowName{
+      font-weight: 950;
+      font-size: 12px;
+      white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+    }
+    .rowSub{
+      margin-top:2px;
+      font-weight: 850;
+      font-size: 11px;
+      color: rgba(233,238,245,.55);
+      white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+    }
+
+    .chatHeader{
+      padding:12px;
+      border-bottom:1px solid rgba(255,255,255,.06);
+      display:flex; align-items:center; justify-content:space-between; gap:10px;
+    }
+    .chatTitle{
+      font-weight: 950;
+      font-size: 13px;
+      letter-spacing: -0.02em;
+      white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+    }
+    .chatHint{
+      font-weight: 850;
+      font-size: 11px;
+      color: rgba(233,238,245,.55);
+      margin-top:2px;
+      white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+    }
+    .chatBox{
+      flex:1;
+      min-height:0;
+      padding:12px;
+      overflow:auto;
+      display:flex;
+      flex-direction:column;
+      gap:10px;
+    }
+
+    .msg{
+      border:1px solid rgba(255,255,255,.08);
+      background: rgba(255,255,255,.03);
+      border-radius: 16px;
+      padding:10px 10px;
+      transition: transform .12s var(--ease), background .12s var(--ease), border-color .12s var(--ease);
+    }
+    .msg:hover{transform: translateY(-1px); border-color: rgba(255,255,255,.14); background: rgba(255,255,255,.04)}
+    .meta{display:flex; align-items:baseline; gap:8px; flex-wrap:wrap}
+    .u{font-weight:950; font-size:12px; cursor:pointer; white-space:nowrap}
+    .t{font-weight:850; font-size:11px; color: rgba(233,238,245,.55)}
+    .body{margin-top:4px; font-weight:850; font-size:13px; line-height:1.35; white-space:pre-wrap; word-wrap:break-word}
+
+    .composer{
+      border-top:1px solid rgba(255,255,255,.06);
+      padding:12px;
+      display:flex;
+      gap:10px;
+      background: rgba(0,0,0,.16);
+    }
+    textarea{
+      width:100%;
+      resize:none;
+      border-radius: 16px;
+      border:1px solid rgba(255,255,255,.10);
+      background: rgba(255,255,255,.02);
+      color: var(--text);
+      padding:10px 12px;
+      font: inherit;
+      font-weight: 850;
+      outline:none;
+      min-height: 42px;
+      max-height: 120px;
+      overflow:auto;
+    }
+    textarea::placeholder{color: rgba(233,238,245,.35); font-weight:800}
+
+    .cooldown{
+      display:flex;
+      align-items:center;
+      gap:8px;
+      font-weight: 900;
+      font-size: 11px;
+      color: rgba(233,238,245,.55);
+      height:14px;
+      user-select:none;
+    }
+    .cdBar{
+      flex:1;
+      height:6px;
+      border-radius:999px;
+      background: rgba(255,255,255,.07);
+      border:1px solid rgba(255,255,255,.08);
+      overflow:hidden;
+    }
+    .cdFill{
+      height:100%;
+      width:0%;
+      background: rgba(255,255,255,.18);
+      transition: width .08s linear;
+    }
+    .cooldown.warn{color: rgba(255,90,106,.95)}
+    .cooldown.warn .cdFill{background: rgba(255,90,106,.35)}
+    .shake{animation: shake .34s var(--ease)}
+    @keyframes shake{
+      0%,100%{transform:translateX(0)}
+      20%{transform:translateX(-5px)}
+      40%{transform:translateX(5px)}
+      60%{transform:translateX(-4px)}
+      80%{transform:translateX(4px)}
+    }
+
+    /* Loading */
+    .loading{
+      position:fixed; inset:0;
+      display:none;
+      align-items:center; justify-content:center;
+      background: rgba(0,0,0,.70);
+      backdrop-filter: blur(10px);
+      z-index:70;
+    }
+    .loading.show{display:flex}
+    .loader{
+      width:min(520px, 92vw);
+      border-radius: 22px;
+      border:1px solid rgba(255,255,255,.10);
+      background: rgba(10,12,16,.78);
+      box-shadow: var(--shadow);
+      padding:16px;
+      transform: translateY(10px);
+      opacity:0;
+      animation: popIn .32s var(--ease) forwards;
+    }
+    .prog{margin-top:12px; height:10px; border-radius:999px; background: rgba(255,255,255,.07); border:1px solid rgba(255,255,255,.08); overflow:hidden}
+    .prog > div{height:100%; width:10%; background: rgba(255,255,255,.18); animation: loadMove 1.05s ease-in-out infinite}
+    @keyframes loadMove{0%{transform: translateX(-40%); width:20%} 50%{transform: translateX(180%); width:35%} 100%{transform: translateX(520%); width:20%}}
+
+    /* Modal */
+    .modalBack{
+      position:fixed; inset:0;
+      background: rgba(0,0,0,.60);
+      backdrop-filter: blur(10px);
+      display:none;
+      align-items:center;
+      justify-content:center;
+      padding:18px;
+      z-index:80;
+    }
+    .modalBack.show{display:flex}
+    .modal{
+      width:min(520px, 92vw);
+      max-height:min(560px, 78vh);
+      display:flex;
+      flex-direction:column;
+      border-radius:22px;
+      border:1px solid rgba(255,255,255,.10);
+      background: rgba(10,12,16,.86);
+      box-shadow: var(--shadow);
+      overflow:hidden;
+      transform: translateY(10px) scale(.99);
+      opacity:0;
+      animation: popIn .30s var(--ease) forwards;
+    }
+    .modalTop{
+      padding:12px;
+      border-bottom:1px solid rgba(255,255,255,.06);
+      display:flex; align-items:center; justify-content:space-between; gap:10px;
+    }
+    .modalTitle{font-weight:950; letter-spacing:-0.03em}
+    .modalBody{
+      padding:12px;
+      overflow:auto;
+      min-height:0;
+      flex:1;
+      display:flex;
+      flex-direction:column;
+      gap:10px;
+    }
+    .modalFooter{
+      padding:12px;
+      border-top:1px solid rgba(255,255,255,.06);
+      display:flex;
+      gap:10px;
+      justify-content:flex-end;
+    }
+
+    /* Dropdown menu */
+    .dropdown{
+      position:fixed;
+      right: calc(50% - min(1120px, 92vw)/2 + 12px);
+      top: calc(50% - min(720px, 86vh)/2 + 64px);
+      width: 230px;
+      border-radius: 18px;
+      border:1px solid rgba(255,255,255,.10);
+      background: rgba(10,12,16,.94);
+      box-shadow: 0 24px 80px rgba(0,0,0,.70);
+      overflow:hidden;
+      z-index:90;
+      display:none;
+    }
+    .dropdown.show{display:block}
+    .ddItem{
+      padding:12px 12px;
+      display:flex;
+      align-items:center;
+      gap:10px;
+      cursor:pointer;
+      user-select:none;
+      border-bottom:1px solid rgba(255,255,255,.06);
+      font-weight: 950;
+    }
+    .ddItem:last-child{border-bottom:none}
+    .ddItem:hover{background: rgba(255,255,255,.05)}
+    .ddItem span{margin-left:auto; color: rgba(233,238,245,.55); font-weight:900}
+    .ddDanger{color: rgba(255,90,106,.95)}
+
+    /* Toasts */
+    .toasts{
+      position:fixed;
+      right: 18px;
+      bottom: 18px;
+      z-index:95;
+      display:flex;
+      flex-direction:column;
+      gap:10px;
+      pointer-events:none;
+    }
+    .toast{
+      width: min(360px, calc(100vw - 36px));
+      border-radius: 18px;
+      border:1px solid rgba(255,255,255,.10);
+      background: rgba(10,12,16,.92);
+      box-shadow: var(--shadow2);
+      padding:10px 12px;
+      display:flex;
+      gap:10px;
+      align-items:flex-start;
+      transform: translateY(10px);
+      opacity:0;
+      animation: toastIn .20s var(--ease) forwards;
+      pointer-events:auto;
+    }
+    @keyframes toastIn{to{transform: translateY(0); opacity:1}}
+    .toastDot{width:10px; height:10px; border-radius:50%; background: rgba(233,238,245,.95); margin-top:5px; opacity:.9}
+    .toastTitle{font-weight:950; font-size:12px}
+    .toastMsg{font-weight:850; font-size:12px; color: rgba(233,238,245,.60); margin-top:2px; line-height:1.35}
+
+    /* Footer below the box */
+    .footer{
+      position:fixed;
+      left:0; right:0;
+      bottom:12px;
+      display:flex;
+      justify-content:center;
+      pointer-events:auto;
+      z-index:10;
+      font-size: 12px;
+      font-weight: 850;
+      color: rgba(233,238,245,.55);
+      gap:10px;
+    }
+    .footer a{
+      color: rgba(233,238,245,.70);
+      text-decoration:none;
+      border-bottom:1px solid rgba(233,238,245,.20);
+    }
+    .footer a:hover{border-bottom-color: rgba(233,238,245,.45)}
+
+    /* Custom Cursor */
+    .cursorDot, .cursorRing{
+      position:fixed;
+      left:0; top:0;
+      pointer-events:none;
+      z-index: 200;
+      transform: translate(-50%, -50%);
+      opacity: 0;
+      transition: opacity .18s var(--ease);
+    }
+    .cursorDot{
+      width:8px; height:8px;
+      border-radius:50%;
+      background: rgba(233,238,245,.95);
+      box-shadow: 0 0 0 6px rgba(233,238,245,.08);
+    }
+    .cursorRing{
+      width:28px; height:28px;
+      border-radius:50%;
+      border:1px solid rgba(233,238,245,.22);
+      box-shadow: 0 0 0 12px rgba(233,238,245,.05);
+    }
+
+    /* Reduce motion */
+    .reduceMotion *{
+      transition:none !important;
+      animation:none !important;
+    }
+
+    /* Mobile */
+    @media (max-width: 980px){
+      body{overflow:auto}
+      .appCard{height:auto; min-height: 86vh}
+      .appInner{flex-direction:column}
+      .sidebar{width:100%; min-width:0}
+      .dropdown{right: 16px; left:auto}
+    }
+  </style>
+</head>
+
+<body>
+  <div class="bgDots"></div>
+  <div class="vignette"></div>
+
+  <!-- Custom cursor -->
+  <div class="cursorDot" id="cursorDot"></div>
+  <div class="cursorRing" id="cursorRing"></div>
+
+  <!-- Login Overlay -->
+  <div id="loginOverlay" class="overlay">
+    <div class="loginCard" id="loginCard">
+      <div class="loginTop">
+        <div style="min-width:0">
+          <h1 class="bigTitle">tonkotsu.online</h1>
+          <div class="subRow">
+            <span class="pill">beta</span>
+            <span>global • dms • groups</span>
+          </div>
+        </div>
+        <div class="pill">v1</div>
+      </div>
+
+      <div class="loginBody">
+        <div class="tutorialBox">
+          <b style="color:rgba(233,238,245,.92)">How it works</b><br><br>
+          • Leave blank to join as <b>Guest</b> (limited).<br>
+          • Use <b>username + password</b> to create/login.<br>
+          • Profiles + XP require a real account.
+        </div>
+
+        <div class="grid2">
+          <input id="username" class="field" placeholder="Username" autocomplete="username" />
+          <div class="fieldWrap">
+            <input id="password" class="field" placeholder="Password" type="password" autocomplete="current-password" style="padding-right:52px" />
+            <button class="eyeBtn" id="togglePass" type="button" title="Show/Hide password">◎</button>
+          </div>
+        </div>
+
+        <div class="loginActions">
+          <button class="btn primary" id="joinBtn">Join</button>
+          <button class="btn" id="guestBtn">Guest</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Loading Screen -->
+  <div id="loading" class="loading">
+    <div class="loader">
+      <div style="font-weight:950;letter-spacing:-0.03em">Entering tonkotsu.online</div>
+      <div style="font-weight:850;font-size:12px;color:rgba(233,238,245,.55);margin-top:6px" id="loaderSub">syncing…</div>
+      <div class="prog"><div></div></div>
+    </div>
+  </div>
+
+  <!-- Main App Card -->
+  <div class="frame">
+    <div id="app" class="appCard">
+      <div class="appInner">
+        <!-- Sidebar -->
+        <aside class="panel sidebar">
+          <div class="sideTop">
+            <div class="brand">tonkotsu.online</div>
+            <div class="inboxBtn" id="inboxBtn" title="Inbox">
+              <div style="font-weight:950">⌁</div>
+              <div class="badge" id="inboxBadge">0</div>
+            </div>
+          </div>
+
+          <div class="sectionTitle">Messages</div>
+          <div class="list" id="messagesList"></div>
+
+          <div class="sectionTitle">Online</div>
+          <div class="list" id="onlineList"></div>
+        </aside>
+
+        <!-- Main Chat -->
+        <main class="panel main">
+          <div class="chatHeader">
+            <div style="min-width:0">
+              <div class="chatTitle" id="chatTitle">Global</div>
+              <div class="chatHint" id="chatHint">shared with everyone online</div>
+            </div>
+
+            <div style="display:flex; align-items:center; gap:10px">
+              <div class="pill" id="xpPill" style="display:none">Lv 1</div>
+              <div class="pill" id="mePill" style="cursor:pointer; max-width:220px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap">—</div>
+            </div>
+          </div>
+
+          <div class="chatBox" id="chatBox"></div>
+
+          <div class="composer">
+            <div style="flex:1; min-width:0; display:flex; flex-direction:column; gap:8px">
+              <div class="cooldown" id="cooldownRow" style="display:none">
+                <div style="width:54px" id="cooldownText">0.0s</div>
+                <div class="cdBar"><div class="cdFill" id="cdFill"></div></div>
+              </div>
+
+              <div style="display:flex; gap:10px; align-items:flex-end">
+                <textarea id="message" rows="1" placeholder="Type a message…"></textarea>
+                <button class="btn small primary" id="sendBtn">Send</button>
+              </div>
+            </div>
+          </div>
+        </main>
+      </div>
+    </div>
+  </div>
+
+  <!-- User dropdown -->
+  <div class="dropdown" id="userDropdown">
+    <div class="ddItem" id="ddProfile">Profile <span>↗</span></div>
+    <div class="ddItem" id="ddSettings">Settings <span>⚙</span></div>
+    <div class="ddItem ddDanger" id="ddLogout">Log out <span>⎋</span></div>
+  </div>
+
+  <!-- Modal -->
+  <div class="modalBack" id="modalBack">
+    <div class="modal">
+      <div class="modalTop">
+        <div class="modalTitle" id="modalTitle">Popup</div>
+        <button class="btn small ghost" id="modalClose">Close</button>
+      </div>
+      <div class="modalBody" id="modalBody"></div>
+      <div class="modalFooter" id="modalFooter" style="display:none"></div>
+    </div>
+  </div>
+
+  <!-- Toasts -->
+  <div class="toasts" id="toasts"></div>
+
+  <!-- Footer -->
+  <div class="footer">
+    <span>© <span id="year"></span> tonkotsu.online — All rights reserved.</span>
+    <span>•</span>
+    <a href="https://ko-fi.com/fishy_x1" target="_blank" rel="noreferrer">Support on Ko-fi</a>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="/script.js"></script>
+</body>
+</html>
