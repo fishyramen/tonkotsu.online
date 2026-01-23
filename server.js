@@ -335,11 +335,12 @@ function publicProfile(username) {
  * - They sometimes go offline then come back
  * - They sometimes say "gtg" and similar
  */
-const SIM_PREFIX = "Sim:";
+const SIM_PREFIX = "";
 const simUsers = [
   "oregon6767","theowner","zippyfn","mikachu","voidd","lilsam",
   "xavier09","idkbro","noxity","bruhmoment","sarahxoxo","jaylen",
-  "kairo","minty","neo","luna","drifty","pixel","maru","vanta"
+  "iamkira","minty","neo","luna","drifty","pixel","maru","vanta","69finalboss",
+  "bot123424","BanichuFN","dream","aurafarmer","therealowner","idkbro","idk1"
 ].map(n => SIM_PREFIX + n);
 
 const simLines = [
@@ -363,6 +364,21 @@ const simLines = [
   "how do i join a group",
   "ping test",
   "anyone online rn"
+  "This reminds me of Discord icl"
+  "67767676776776767"
+  "Whoaa this is cool"
+  "Anyone wanna make a big ass gc"
+  "Hi"
+  "hii"
+  "Yoooo"
+  "They should add vcs"
+  "im the owner i own you all"
+  "stupid cooldown"
+  "Who down to play some Fortnite??"
+  "where the huzz at"
+  "oh shit this website acc has ppl"
+  "god bless america"
+  "shut the fuck up"
 ];
 
 function ensureSimUserRecord(name) {
