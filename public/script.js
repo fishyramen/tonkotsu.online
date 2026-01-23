@@ -1,19 +1,24 @@
 /* public/script.js
-   - Works with your current index.html IDs (the version you pasted earlier).
-   - No alerts: uses modal + toasts only.
-   - Fixes: modals closable, login/resume on refresh, settings preview doesn’t “save” until you press Save,
-            messages sidebar shows Global + your DMs + your groups (no subtabs),
-            inbox shows friend requests + group invites in one list (no sections),
-            group creation uses invites-required flow (group:createRequest) but also supports older group:create fallback.
+   Compatible with your server.js (ESM) that you pasted.
+   Implements:
+   - Star background + compact centered UI
+   - Login/resume refresh
+   - Sidebar: Inbox button, Online list, Messages list (Global + DMs + Groups)
+   - Inbox: mentions + group invites + friend requests (flat list)
+   - Settings save + preview
+   - Top-right user dropdown: Profile / Settings / Logout
+   - Custom cursor modes (Off / Dot / Dot+Trail)
+   - Global cooldown 3s logged-in, 5s guest, dynamic, shake+red on violation
+   - Groups: invite-required creation and accept/decline
 */
 
 const socket = io();
 const $ = (id) => document.getElementById(id);
 
-// ------------------------- UI refs (defensive) -------------------------
+// -------------------- DOM --------------------
 const loginOverlay = $("loginOverlay");
 const loading = $("loading");
-const app = $("app");
+const loaderSub = $("loaderSub");
 
 const usernameEl = $("username");
 const passwordEl = $("password");
@@ -21,20 +26,9 @@ const joinBtn = $("joinBtn");
 const guestBtn = $("guestBtn");
 const togglePass = $("togglePass");
 
-const mePill = $("mePill");
-const meName = $("meName");
-
-const tabGlobal = $("tabGlobal");
-const tabMessages = $("tabMessages");
-const tabInbox = $("tabInbox");
-const msgPing = $("msgPing");
-const inboxPing = $("inboxPing");
-const sideSection = $("sideSection");
-
+const app = $("app");
 const chatTitle = $("chatTitle");
 const chatHint = $("chatHint");
-const backBtn = $("backBtn");
-
 const chatBox = $("chatBox");
 const messageEl = $("message");
 const sendBtn = $("sendBtn");
@@ -42,10 +36,20 @@ const sendBtn = $("sendBtn");
 const cooldownRow = $("cooldownRow");
 const cooldownText = $("cooldownText");
 const cdFill = $("cdFill");
+const cooldownLabel = $("cooldownLabel");
 
-const settingsBtn = $("settingsBtn");
-const logoutBtn = $("logoutBtn");
-const loginBtn = $("loginBtn");
+const mePill = $("mePill");
+const meName = $("meName");
+const meSub = $("meSub");
+
+const inboxBtn = $("inboxBtn");
+const inboxPing = $("inboxPing");
+const msgPing = $("msgPing");
+
+const onlineCount = $("onlineCount");
+const onlineList = $("onlineList");
+const msgList = $("msgList");
+const createGroupBtn = $("createGroupBtn");
 
 const modalBack = $("modalBack");
 const modalTitle = $("modalTitle");
@@ -53,85 +57,49 @@ const modalBody = $("modalBody");
 const modalClose = $("modalClose");
 
 const toasts = $("toasts");
-
-// Footer year
 const yearEl = $("year");
 if (yearEl) yearEl.textContent = String(new Date().getFullYear());
 
-// Safety: if a previous broken state left overlays visible, reset
-if (modalBack) modalBack.classList.remove("show");
-if (loading) loading.classList.remove("show");
+const cursorDot = $("cursorDot");
+const cursorRing = $("cursorRing");
 
-// ------------------------- State -------------------------
+// -------------------- State --------------------
 let me = null;
 let isGuest = false;
 let token = localStorage.getItem("tonkotsu_token") || null;
 
-let onlineUsers = [];            // [{user}]
-let settings = null;             // from server (non-guest)
-let social = null;               // from server (non-guest)
-let xp = null;                   // from server (non-guest), or null for guest
+let settings = null; // {theme,density,sidebar,hideMildProfanity,cursor,sounds}
+let social = null;   // {friends,incoming,outgoing,blocked}
+let xp = null;
 
-let view = { type: "global", id: null };  // global | dm | group
+let view = { type: "global", id: null }; // global|dm|group
 let currentDM = null;
 let currentGroupId = null;
 
-// caches
+let onlineUsers = []; // [{user}]
 let globalCache = [];
-let dmCache = new Map();         // user -> msgs
-let groupMeta = new Map();       // gid -> {id,name,owner,members[]}
-let groupCache = new Map();      // gid -> msgs
+let dmCache = new Map(); // user -> msgs
+let groupMeta = new Map(); // gid -> meta
+let groupCache = new Map(); // gid -> msgs
 
-// pings
-let unreadDM = new Map();        // user -> count
-let unreadGroup = new Map();     // gid -> count
-let mentions = [];               // local mentions for inbox: [{from, scope, ts, text}]
-let lastSeenGlobalTs = 0;
+let unreadDM = new Map();
+let unreadGroup = new Map();
 
-// cooldown
+let groupInvitesCache = []; // from inbox:data
+
+// Mentions stored locally (server doesn’t have mention events)
+let mentions = []; // {from, ts, text}
+
+// Cooldown
 let cooldownUntil = 0;
 
-// mild profanity list (allowed but optionally hidden client-side)
-const MILD_WORDS = [
-  "fuck","fucking","shit","shitty","asshole","bitch","bastard","dick","pussy"
-];
-const MILD_RX = new RegExp(
-  `\\b(${MILD_WORDS.map(w => w.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")).join("|")})\\b`,
-  "ig"
-);
+// Cursor
+let cursorMode = "trail"; // off | dot | trail
+let reduceAnims = false;
 
-// ------------------------- Themes / Density (must exist in your HTML) -------------------------
-const THEMES = {
-  dark:   { bg:"#0b0d10", panel:"rgba(255,255,255,.02)", stroke:"#1c232c", stroke2:"#242c36", text:"#e8edf3", muted:"#9aa7b3" },
-  vortex: { bg:"#070913", panel:"rgba(120,140,255,.06)", stroke:"#1a2240", stroke2:"#28305c", text:"#eaf0ff", muted:"#9aa7d6" },
-  abyss:  { bg:"#060a0b", panel:"rgba(80,255,220,.05)",  stroke:"#12312c", stroke2:"#1c3f37", text:"#e8fff9", muted:"#8abfb3" },
-  carbon: { bg:"#0c0d0e", panel:"rgba(255,255,255,.035)", stroke:"#272a2e", stroke2:"#343840", text:"#f2f4f7", muted:"#a0a8b3" },
-};
-
-function applyTheme(name){
-  const t = THEMES[name] || THEMES.dark;
-  const r = document.documentElement.style;
-  r.setProperty("--bg", t.bg);
-  r.setProperty("--panel", t.panel);
-  r.setProperty("--stroke", t.stroke);
-  r.setProperty("--stroke2", t.stroke2);
-  r.setProperty("--text", t.text);
-  r.setProperty("--muted", t.muted);
-}
-function applyDensity(val){
-  // val 0..1
-  const v = Math.max(0, Math.min(1, Number(val)));
-  const pad = Math.round(8 + v * 10);   // 8..18
-  const font = Math.round(12 + v * 2);  // 12..14
-  const r = document.documentElement.style;
-  r.setProperty("--pad", `${pad}px`);
-  r.setProperty("--font", `${font}px`);
-}
-
-// ------------------------- Helpers -------------------------
+// -------------------- Helpers --------------------
 function now(){ return Date.now(); }
 function clamp(n,a,b){ return Math.max(a, Math.min(b,n)); }
-
 function escapeHtml(s){
   return String(s ?? "")
     .replaceAll("&","&amp;")
@@ -140,9 +108,15 @@ function escapeHtml(s){
     .replaceAll('"',"&quot;")
     .replaceAll("'","&#039;");
 }
-
 function isGuestUser(u){ return /^Guest\d{4,5}$/.test(String(u)); }
 
+function showLoading(text="syncing…"){
+  if (loaderSub) loaderSub.textContent = text;
+  if (loading) loading.classList.add("show");
+}
+function hideLoading(){
+  if (loading) loading.classList.remove("show");
+}
 function toast(title, msg){
   if (!toasts) return;
   const d = document.createElement("div");
@@ -155,17 +129,9 @@ function toast(title, msg){
     </div>
   `;
   toasts.appendChild(d);
-  setTimeout(() => { d.style.opacity="0"; d.style.transform="translateY(10px)"; }, 2400);
-  setTimeout(() => d.remove(), 2900);
-}
-
-function showLoading(text="syncing…"){
-  const sub = $("loaderSub");
-  if (sub) sub.textContent = text;
-  if (loading) loading.classList.add("show");
-}
-function hideLoading(){
-  if (loading) loading.classList.remove("show");
+  const dur = reduceAnims ? 1600 : 2600;
+  setTimeout(()=>{ d.style.opacity="0"; d.style.transform="translateY(10px)"; }, dur);
+  setTimeout(()=> d.remove(), dur + 350);
 }
 
 function openModal(title, html){
@@ -179,31 +145,110 @@ function closeModal(){
   modalBack.classList.remove("show");
   if (modalBody) modalBody.innerHTML = "";
 }
-
 if (modalClose) modalClose.addEventListener("click", closeModal);
-if (modalBack) modalBack.addEventListener("click", (e)=>{ if(e.target===modalBack) closeModal(); });
+if (modalBack) modalBack.addEventListener("click",(e)=>{ if(e.target===modalBack) closeModal(); });
 
-// ------------------------- Password toggle -------------------------
-if (togglePass && passwordEl) {
-  // Use symbols, not emoji (you asked for symbol)
-  togglePass.textContent = "👁"; // if you want pure symbol: "◉" or "⌁"
-  togglePass.addEventListener("click", () => {
-    const isPw = passwordEl.type === "password";
-    passwordEl.type = isPw ? "text" : "password";
-    togglePass.textContent = isPw ? "🙈" : "👁";
-  });
+function fmtTime(ts){
+  const d = new Date(ts);
+  if (!Number.isFinite(d.getTime())) return "";
+  const h = String(d.getHours()).padStart(2,"0");
+  const m = String(d.getMinutes()).padStart(2,"0");
+  return `${h}:${m}`;
 }
 
-// ------------------------- Cooldown -------------------------
-function cooldownSeconds(){
-  return isGuest ? 5 : 3;
+// Mild profanity masking (optional)
+const MILD_WORDS = ["fuck","fucking","shit","shitty","asshole","bitch","bastard","dick","pussy"];
+const MILD_RX = new RegExp(`\\b(${MILD_WORDS.map(w=>w.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")).join("|")})\\b`, "ig");
+function maybeHideMild(text){
+  if (!settings?.hideMildProfanity) return text;
+  return String(text).replace(MILD_RX, "•••");
 }
-function canSend(){
-  return now() >= cooldownUntil;
+function isBlockedUser(u){
+  return !!social?.blocked?.includes(u);
 }
+
+// -------------------- Cursor (3 modes) --------------------
+let mouseX = window.innerWidth/2, mouseY = window.innerHeight/2;
+let dotX = mouseX, dotY = mouseY, ringX = mouseX, ringY = mouseY;
+const trail = [];
+const TRAIL_MAX = 10;
+
+function setCursorMode(mode){
+  cursorMode = mode; // off|dot|trail
+  const off = (mode === "off");
+  document.body.style.cursor = off ? "auto" : "none";
+
+  // Ensure elements don’t show default cursor
+  const forced = off ? "" : "none";
+  const styleElId = "__cursor_force__";
+  let styleEl = document.getElementById(styleElId);
+  if (!styleEl){
+    styleEl = document.createElement("style");
+    styleEl.id = styleElId;
+    document.head.appendChild(styleEl);
+  }
+  styleEl.textContent = off
+    ? `a,button,input,textarea,.row,.btn,.pill{cursor:auto!important}`
+    : `a,button,input,textarea,.row,.btn,.pill{cursor:none!important}`;
+
+  if (cursorDot) cursorDot.style.display = off ? "none" : "block";
+  if (cursorRing) cursorRing.style.display = off ? "none" : "block";
+  // Clear trail nodes
+  document.querySelectorAll(".cursorTrail").forEach(n=>n.remove());
+  trail.length = 0;
+}
+
+window.addEventListener("mousemove",(e)=>{
+  mouseX = e.clientX;
+  mouseY = e.clientY;
+  if (cursorMode === "trail" && !reduceAnims){
+    trail.unshift({x:mouseX, y:mouseY, t: now()});
+    if (trail.length > TRAIL_MAX) trail.pop();
+  }
+});
+
+function cursorTick(){
+  // Smooth follow
+  const dotLerp = reduceAnims ? 1 : 0.35;
+  const ringLerp = reduceAnims ? 1 : 0.18;
+
+  dotX += (mouseX - dotX) * dotLerp;
+  dotY += (mouseY - dotY) * dotLerp;
+  ringX += (mouseX - ringX) * ringLerp;
+  ringY += (mouseY - ringY) * ringLerp;
+
+  if (cursorDot) cursorDot.style.transform = `translate(${dotX}px, ${dotY}px) translate(-50%,-50%)`;
+  if (cursorRing) cursorRing.style.transform = `translate(${ringX}px, ${ringY}px) translate(-50%,-50%)`;
+
+  if (cursorMode === "trail" && !reduceAnims){
+    // render short trail
+    // remove old nodes
+    document.querySelectorAll(".cursorTrail").forEach(n=>n.remove());
+    const nowT = now();
+    trail.forEach((p,i)=>{
+      const age = nowT - p.t;
+      const op = clamp(1 - age / 250, 0, 1) * (1 - i/(TRAIL_MAX+2));
+      if (op <= 0.02) return;
+      const n = document.createElement("div");
+      n.className = "cursorTrail";
+      n.style.opacity = String(op);
+      n.style.transform = `translate(${p.x}px, ${p.y}px) translate(-50%,-50%)`;
+      n.style.width = (10 - i*0.5) + "px";
+      n.style.height = (10 - i*0.5) + "px";
+      document.body.appendChild(n);
+    });
+  }
+  requestAnimationFrame(cursorTick);
+}
+
+// -------------------- Cooldown --------------------
+function cooldownSeconds(){ return isGuest ? 5 : 3; }
+function canSend(){ return now() >= cooldownUntil; }
+
 function startCooldown(){
   const secs = cooldownSeconds();
   cooldownUntil = now() + secs * 1000;
+  if (cooldownLabel) cooldownLabel.textContent = `Cooldown: ${secs}s`;
   if (cooldownRow) cooldownRow.style.display = "flex";
   updateCooldown();
 }
@@ -216,7 +261,7 @@ function updateCooldown(){
   if (msLeft <= 0){
     if (cooldownRow){
       cooldownRow.style.display = "none";
-      cooldownRow.classList.remove("warn");
+      cooldownRow.classList.remove("warn","shake");
     }
     return;
   }
@@ -227,76 +272,51 @@ function cooldownWarn(){
   if (!cooldownRow) return;
   cooldownRow.style.display = "flex";
   cooldownRow.classList.add("warn","shake");
-  setTimeout(()=> cooldownRow.classList.remove("shake"), 380);
+  setTimeout(()=> cooldownRow.classList.remove("shake"), 350);
   setTimeout(()=> cooldownRow.classList.remove("warn"), 900);
 }
 
-// ------------------------- View switching -------------------------
+// -------------------- View + Rendering --------------------
 function setView(type, id=null){
   view = { type, id };
-  socket.emit("view:set", view); // harmless even if server ignores
+  currentDM = (type==="dm") ? id : null;
+  currentGroupId = (type==="group") ? id : null;
 
-  if (!chatTitle || !chatHint || !backBtn) return;
+  if (!chatTitle || !chatHint) return;
 
   if (type === "global"){
     chatTitle.textContent = "Global chat";
-    chatHint.textContent = "shared with everyone online";
-    backBtn.style.display = "none";
+    chatHint.textContent = "shared with everyone";
   } else if (type === "dm"){
     chatTitle.textContent = `DM — ${id}`;
     chatHint.textContent = "private messages";
-    backBtn.style.display = "inline-flex";
   } else if (type === "group"){
     const meta = groupMeta.get(id);
-    chatTitle.textContent = meta ? `Group — ${meta.name}` : "Group";
-    chatHint.textContent = "group chat";
-    backBtn.style.display = "inline-flex";
+    chatTitle.textContent = meta ? `Group — ${meta.name}` : "Group chat";
+    chatHint.textContent = "group messages";
   }
 }
 
-if (backBtn) backBtn.addEventListener("click", ()=> openGlobal(true));
-
-// ------------------------- Rendering messages -------------------------
-function fmtTime(ts){
-  const d = new Date(ts);
-  if (!Number.isFinite(d.getTime())) return null;
-  const h = String(d.getHours()).padStart(2,"0");
-  const m = String(d.getMinutes()).padStart(2,"0");
-  return `${h}:${m}`;
-}
-
-function maybeHideMild(text){
-  if (!settings?.hideMildProfanity) return text;
-  return String(text).replace(MILD_RX, "•••");
-}
-
-function isBlockedUser(u){
-  return !!social?.blocked?.includes(u);
+function clearChat(){
+  if (chatBox) chatBox.innerHTML = "";
 }
 
 function renderTextWithMentions(text){
-  // keep it simple: highlight @me only (no markdown)
+  if (!me) return escapeHtml(text);
   const safe = escapeHtml(text);
-  if (!me) return safe;
   const rx = new RegExp(`(@${me.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")})`, "ig");
-  return safe.replace(rx, `<span style="color:var(--warn);font-weight:900">$1</span>`);
+  return safe.replace(rx, `<span style="color:var(--warn);font-weight:950">$1</span>`);
 }
 
-function addMessageToUI({ user, text, ts }, { scope="global", from=null, groupId=null } = {}){
-  const t = fmtTime(ts);
-  if (!t || !chatBox) return;
+function addMessageToUI({ user, text, ts }, scope){
+  if (!chatBox) return;
+  const time = fmtTime(ts);
 
-  const who = (scope === "dm") ? from : user;
-
+  let who = user;
   let bodyText = String(text ?? "");
-  if (bodyText === "__HIDDEN_BY_FILTER__") {
-    bodyText = "Message hidden (filtered).";
-  }
+  if (bodyText === "__HIDDEN_BY_FILTER__") bodyText = "Message hidden (filtered).";
 
-  // Block behavior:
-  // - Global: hide blocked user messages (you can add an “unblur” later)
-  // - DM/group: block should prevent DM on server; if it arrives, mask
-  if (scope === "global" && isBlockedUser(who)) {
+  if (scope === "global" && who && isBlockedUser(who)){
     bodyText = "Message hidden (blocked user).";
   } else {
     bodyText = maybeHideMild(bodyText);
@@ -308,17 +328,16 @@ function addMessageToUI({ user, text, ts }, { scope="global", from=null, groupId
     <div class="bubble">
       <div class="meta">
         <div class="u" data-user="${escapeHtml(who)}">${escapeHtml(who)}${(who===me?" (You)":"")}</div>
-        <div class="t">${t}</div>
+        <div class="t">${escapeHtml(time)}</div>
       </div>
       <div class="body">${renderTextWithMentions(bodyText)}</div>
     </div>
   `;
 
-  // click username -> profile popup
   const uEl = row.querySelector(".u");
-  if (uEl) {
-    uEl.addEventListener("click", (e)=>{
-      const u = e.target.getAttribute("data-user");
+  if (uEl){
+    uEl.addEventListener("click", ()=>{
+      const u = uEl.getAttribute("data-user");
       openProfile(u);
     });
   }
@@ -326,50 +345,41 @@ function addMessageToUI({ user, text, ts }, { scope="global", from=null, groupId
   chatBox.appendChild(row);
   chatBox.scrollTop = chatBox.scrollHeight;
 
-  // Local mention tracking (for inbox + ping) — server does not store mentions in the provided backend
-  if (scope === "global" && me && who !== me && !isGuest) {
+  // Local mentions -> Inbox
+  if (scope === "global" && me && who && who !== me && !isGuest){
     const raw = String(text ?? "");
-    if (raw.toLowerCase().includes(`@${me.toLowerCase()}`)) {
-      mentions.unshift({ from: who, scope: "Global chat", ts: ts || now(), text: raw.slice(0, 120) });
+    if (raw.toLowerCase().includes(`@${me.toLowerCase()}`)){
+      mentions.unshift({ from: who, ts: ts || now(), text: raw.slice(0, 140) });
       mentions = mentions.slice(0, 80);
-      bumpInboxPing();
+      updateBadges();
     }
   }
-
-  // Track “last seen” for global so you don’t endlessly ping yourself
-  if (scope === "global") lastSeenGlobalTs = Math.max(lastSeenGlobalTs, Number(ts || 0));
 }
 
-function clearChat(){
-  if (chatBox) chatBox.innerHTML = "";
-}
+// -------------------- Sidebar: Online + Messages --------------------
+function renderOnline(){
+  if (!onlineList) return;
+  if (onlineCount) onlineCount.textContent = String(onlineUsers.length);
 
-// ------------------------- Sidebar render -------------------------
-function renderSidebarGlobal(){
-  if (!sideSection) return;
-
-  sideSection.innerHTML = `
-    <div style="display:flex;align-items:center;justify-content:space-between;gap:10px">
-      <div style="font-weight:950;font-size:12px;color:#dbe6f1">Online</div>
-      <div style="font-size:11px;color:var(--muted)">${onlineUsers.length}</div>
-    </div>
-    <div style="display:flex;flex-direction:column;gap:8px">
-      ${onlineUsers.map(u => `
-        <div class="row" data-profile="${escapeHtml(u.user)}">
-          <div class="rowLeft">
-            <div class="statusDot on"></div>
-            <div class="nameCol">
-              <div class="rowName">${escapeHtml(u.user)}${u.user===me ? " (You)" : ""}</div>
-              <div class="rowSub">click for profile</div>
-            </div>
+  onlineList.innerHTML = onlineUsers.map(u=>{
+    const name = u.user;
+    return `
+      <div class="row" data-open-profile="${escapeHtml(name)}">
+        <div class="rowLeft">
+          <div class="statusDot on"></div>
+          <div class="nameCol">
+            <div class="rowName">${escapeHtml(name)}${name===me?" (You)":""}</div>
+            <div class="rowSub">click for profile</div>
           </div>
         </div>
-      `).join("")}
-    </div>
-  `;
+      </div>
+    `;
+  }).join("");
 
-  sideSection.querySelectorAll("[data-profile]").forEach(el=>{
-    el.addEventListener("click", ()=> openProfile(el.getAttribute("data-profile")));
+  onlineList.querySelectorAll("[data-open-profile]").forEach(el=>{
+    el.addEventListener("click", ()=>{
+      openProfile(el.getAttribute("data-open-profile"));
+    });
   });
 }
 
@@ -381,223 +391,182 @@ function totalMessagePings(){
 }
 
 function updateBadges(){
-  // Messages badge = DM + group unread (no global)
+  // Messages: DM + Group only (no global)
   const m = totalMessagePings();
   if (msgPing){
     msgPing.textContent = String(m);
     msgPing.classList.toggle("show", m > 0);
   }
 
-  // Inbox badge = friend requests + group invites + mentions (local)
+  // Inbox: mentions + invites + friend requests
   const friendCount = Array.isArray(social?.incoming) ? social.incoming.length : 0;
-  const inviteCount = Array.isArray(window.__groupInvitesCache) ? window.__groupInvitesCache.length : 0;
+  const inviteCount = Array.isArray(groupInvitesCache) ? groupInvitesCache.length : 0;
   const mentionCount = mentions.length;
-  const i = friendCount + inviteCount + mentionCount;
+  const total = friendCount + inviteCount + mentionCount;
 
   if (inboxPing){
-    inboxPing.textContent = String(i);
-    inboxPing.classList.toggle("show", i > 0);
+    inboxPing.textContent = String(total);
+    inboxPing.classList.toggle("show", total > 0);
   }
 }
 
-function bumpInboxPing(){
+function renderMessagesList(){
+  if (!msgList) return;
+
+  const dmUsers = Array.from(dmCache.keys()).sort((a,b)=>a.localeCompare(b));
+  const groups = Array.from(groupMeta.values()).sort((a,b)=>String(a.name).localeCompare(String(b.name)));
+
+  msgList.innerHTML = `
+    <div class="row" data-open="global">
+      <div class="rowLeft">
+        <div class="statusDot on"></div>
+        <div class="nameCol">
+          <div class="rowName">Global chat</div>
+          <div class="rowSub">shared</div>
+        </div>
+      </div>
+    </div>
+
+    ${dmUsers.map(u=>{
+      const c = unreadDM.get(u) || 0;
+      return `
+        <div class="row" data-open="dm" data-id="${escapeHtml(u)}">
+          <div class="rowLeft">
+            <div class="statusDot ${onlineUsers.some(x=>x.user===u)?"on":""}"></div>
+            <div class="nameCol">
+              <div class="rowName">${escapeHtml(u)}</div>
+              <div class="rowSub">dm</div>
+            </div>
+          </div>
+          <div class="badge ${c>0?"show":""}" style="display:${c>0?"flex":"none"}">${c}</div>
+        </div>
+      `;
+    }).join("")}
+
+    ${groups.map(g=>{
+      const c = unreadGroup.get(g.id) || 0;
+      return `
+        <div class="row" data-open="group" data-id="${escapeHtml(g.id)}">
+          <div class="rowLeft">
+            <div class="statusDot on"></div>
+            <div class="nameCol">
+              <div class="rowName">${escapeHtml(g.name)}</div>
+              <div class="rowSub">${escapeHtml(g.id)}</div>
+            </div>
+          </div>
+          <div class="badge ${c>0?"show":""}" style="display:${c>0?"flex":"none"}">${c}</div>
+        </div>
+      `;
+    }).join("")
+  `;
+
+  msgList.querySelectorAll("[data-open]").forEach(el=>{
+    el.addEventListener("click", ()=>{
+      const t = el.getAttribute("data-open");
+      const id = el.getAttribute("data-id");
+      if (t === "global") openGlobal();
+      if (t === "dm") openDM(id);
+      if (t === "group") openGroup(id);
+    });
+
+    // Right click mute UI placeholder
+    el.addEventListener("contextmenu",(e)=>{
+      e.preventDefault();
+      openModal("Mute", `
+        <div class="muted" style="line-height:1.45">
+          Mute is UI-only unless you add server-side mute support.
+        </div>
+        <div style="display:flex;gap:10px;margin-top:12px">
+          <button class="btn primary" id="muteOk">OK</button>
+        </div>
+      `);
+      const ok = $("muteOk");
+      if (ok) ok.onclick = closeModal;
+    });
+  });
+
   updateBadges();
 }
 
-function renderSidebarMessages(){
-  if (!sideSection) return;
-
-  // Build lists
-  const dmUsers = Array.from(new Set(Array.from(dmCache.keys()))).sort((a,b)=>a.localeCompare(b));
-  const groups = Array.from(groupMeta.values()).sort((a,b)=>String(a.name).localeCompare(String(b.name)));
-
-  sideSection.innerHTML = `
-    <div style="display:flex;align-items:center;justify-content:space-between;gap:10px">
-      <div style="font-weight:950;font-size:12px;color:#dbe6f1">Messages</div>
-      <button class="btn small" id="createGroupBtn">Create group</button>
-    </div>
-
-    <div style="display:flex;flex-direction:column;gap:8px;margin-top:8px" id="msgList">
-      <div class="row" data-open="global">
-        <div class="rowLeft">
-          <div class="statusDot on"></div>
-          <div class="nameCol">
-            <div class="rowName">Global chat</div>
-            <div class="rowSub">shared</div>
-          </div>
-        </div>
-      </div>
-
-      ${dmUsers.map(u=>{
-        const c = unreadDM.get(u) || 0;
-        return `
-          <div class="row" data-open="dm" data-id="${escapeHtml(u)}">
-            <div class="rowLeft">
-              <div class="statusDot ${onlineUsers.some(x=>x.user===u) ? "on":""}"></div>
-              <div class="nameCol">
-                <div class="rowName">${escapeHtml(u)}</div>
-                <div class="rowSub">dm</div>
-              </div>
-            </div>
-            ${c>0 ? `<div class="ping show">${c}</div>` : ``}
-          </div>
-        `;
-      }).join("")}
-
-      ${groups.map(g=>{
-        const c = unreadGroup.get(g.id) || 0;
-        return `
-          <div class="row" data-open="group" data-id="${escapeHtml(g.id)}">
-            <div class="rowLeft">
-              <div class="statusDot on"></div>
-              <div class="nameCol">
-                <div class="rowName">${escapeHtml(g.name)}</div>
-                <div class="rowSub">${escapeHtml(g.id)}</div>
-              </div>
-            </div>
-            ${c>0 ? `<div class="ping show">${c}</div>` : ``}
-          </div>
-        `;
-      }).join("")}
-    </div>
-  `;
-
-  const msgList = $("msgList");
-  if (msgList){
-    msgList.querySelectorAll("[data-open]").forEach(row=>{
-      row.addEventListener("click", ()=>{
-        const t = row.getAttribute("data-open");
-        const id = row.getAttribute("data-id");
-        if (t === "global") openGlobal(true);
-        if (t === "dm") openDM(id);
-        if (t === "group") openGroup(id);
-      });
-
-      // Right click to mute placeholder (UI only unless you add server support)
-      row.addEventListener("contextmenu", (e)=>{
-        e.preventDefault();
-        const t = row.getAttribute("data-open");
-        const id = row.getAttribute("data-id");
-        openModal("Mute", `
-          <div style="color:var(--muted);font-size:12px;line-height:1.45">
-            Muting is UI-only right now unless you add server-side mutes.
-          </div>
-          <div style="display:flex;gap:10px;margin-top:12px">
-            <button class="btn primary" id="muteOk">OK</button>
-          </div>
-        `);
-        const ok = $("muteOk");
-        if (ok) ok.onclick = closeModal;
-      });
-    });
-  }
-
-  const createBtn = $("createGroupBtn");
-  if (createBtn){
-    createBtn.onclick = () => {
-      if (isGuest){
-        toast("Guests", "Guests can’t create groups. Log in to use groups.");
-        return;
-      }
-      openModal("Create group", `
-        <div style="display:flex;flex-direction:column;gap:10px">
-          <div style="font-size:12px;color:var(--muted)">Group name</div>
-          <input id="gcName" class="field" placeholder="Unnamed Group" />
-          <div style="font-size:12px;color:var(--muted)">Invite at least 1 user</div>
-          <input id="gcInvites" class="field" placeholder="user1, user2, user3" />
-          <button class="btn primary" id="gcCreate">Send invites</button>
-          <div style="font-size:11px;color:var(--muted);line-height:1.45">
-            A group becomes active only after someone accepts your invite.
-          </div>
-        </div>
-      `);
-      setTimeout(()=> $("gcName")?.focus(), 40);
-
-      const go = $("gcCreate");
-      if (go){
-        go.onclick = () => {
-          const name = ($("gcName")?.value || "").trim();
-          const rawInv = ($("gcInvites")?.value || "").trim();
-          const invites = rawInv
-            .split(",")
-            .map(s => s.trim())
-            .filter(Boolean);
-
-          closeModal();
-
-          // New flow (invites-required)
-          socket.emit("group:createRequest", { name, invites });
-
-          // Backward compatibility: if server still uses old event
-          socket.emit("group:create", { name });
-
-          toast("Group", "Sending invites…");
-        };
-      }
-    };
-  }
+// -------------------- Openers --------------------
+function openGlobal(){
+  setView("global");
+  clearChat();
+  globalCache.forEach(m=> addMessageToUI(m, "global"));
+  socket.emit("requestGlobalHistory");
 }
 
-function renderSidebarInbox(){
-  if (!sideSection) return;
-
+function openDM(user){
   if (isGuest){
-    sideSection.innerHTML = `
-      <div style="padding:12px;border:1px solid var(--stroke);border-radius:14px;background:rgba(255,255,255,.02);color:var(--muted);font-size:12px;line-height:1.45">
-        Guest mode has no inbox.
-        <br><br>
-        Log in to get friend requests, invites, and mentions.
-      </div>
-    `;
+    toast("Guests", "Guests can’t use DMs. Log in to DM.");
+    return;
+  }
+  if (!user) return;
+  unreadDM.set(user, 0);
+  updateBadges();
+
+  setView("dm", user);
+  clearChat();
+  socket.emit("dm:history", { withUser: user });
+}
+
+function openGroup(gid){
+  if (isGuest) return;
+  if (!gid) return;
+  unreadGroup.set(gid, 0);
+  updateBadges();
+
+  setView("group", gid);
+  clearChat();
+  socket.emit("group:history", { groupId: gid });
+}
+
+// -------------------- Inbox (flat list) --------------------
+function openInbox(){
+  if (isGuest){
+    openModal("Inbox", `<div class="muted">Guest mode has no inbox.</div>`);
     return;
   }
 
-  // Fetch latest
   socket.emit("inbox:get");
-
-  const friends = Array.isArray(social?.incoming) ? social.incoming : [];
-  const invites = Array.isArray(window.__groupInvitesCache) ? window.__groupInvitesCache : [];
-  const localMentions = mentions;
 
   const items = [];
 
-  for (const m of localMentions){
+  // Mentions
+  for (const m of mentions){
     items.push({
       type: "mention",
-      label: `${m.from} mentioned you in ${m.scope}`,
+      label: `${m.from} mentioned you in Global chat`,
       sub: new Date(m.ts).toLocaleString(),
-      action: "viewMention",
-      payload: m
+      action: "mention"
     });
   }
 
-  for (const u of friends){
+  // Friend requests
+  const incoming = Array.isArray(social?.incoming) ? social.incoming : [];
+  for (const u of incoming){
     items.push({
       type: "friend",
       label: `${u} sent a friend request`,
       sub: "Tap to accept",
-      action: "acceptFriend",
+      action: "friendAccept",
       payload: u
     });
   }
 
-  for (const inv of invites){
+  // Group invites
+  for (const inv of groupInvitesCache){
     items.push({
       type: "invite",
       label: `${inv.from} invited you to “${inv.name}”`,
       sub: "Tap to accept",
-      action: "acceptInvite",
+      action: "inviteAccept",
       payload: inv
     });
   }
 
-  sideSection.innerHTML = `
-    <div style="display:flex;align-items:center;justify-content:space-between;gap:10px">
-      <div style="font-weight:950;font-size:12px;color:#dbe6f1">Inbox</div>
-      <div style="font-size:11px;color:var(--muted)">${items.length} item(s)</div>
-    </div>
-
-    <div style="display:flex;flex-direction:column;gap:8px;margin-top:8px" id="inboxList">
+  const html = `
+    <div style="display:flex;flex-direction:column;gap:10px">
       ${items.length ? items.map((it, idx)=>`
         <div class="row" data-inbox-idx="${idx}">
           <div class="rowLeft">
@@ -607,316 +576,264 @@ function renderSidebarInbox(){
               <div class="rowSub">${escapeHtml(it.sub)}</div>
             </div>
           </div>
-          <button class="btn small primary" data-inbox-action="${escapeHtml(it.action)}" data-inbox-idx="${idx}">Open</button>
+          <button class="btn small primary" data-act="${escapeHtml(it.action)}" data-idx="${idx}">Open</button>
         </div>
-      `).join("") : `
-        <div style="padding:12px;border:1px solid var(--stroke);border-radius:14px;background:rgba(255,255,255,.02);color:var(--muted);font-size:12px">
-          Nothing here right now.
-        </div>
-      `}
+      `).join("") : `<div class="muted">Nothing here right now.</div>`}
     </div>
   `;
 
-  const list = $("inboxList");
-  if (!list) return;
+  openModal("Inbox", html);
 
-  list.querySelectorAll("[data-inbox-action]").forEach(btn=>{
-    btn.addEventListener("click", (e)=>{
-      e.stopPropagation();
-      const idx = Number(btn.getAttribute("data-inbox-idx"));
-      const action = btn.getAttribute("data-inbox-action");
+  modalBody.querySelectorAll("[data-act]").forEach(btn=>{
+    btn.addEventListener("click", ()=>{
+      const idx = Number(btn.getAttribute("data-idx"));
+      const act = btn.getAttribute("data-act");
       const it = items[idx];
       if (!it) return;
 
-      if (action === "viewMention"){
-        // Jump to global + optionally show context
-        openGlobal(true);
-        // Clear all mentions after viewing
+      if (act === "mention"){
         mentions = [];
         updateBadges();
+        closeModal();
+        openGlobal();
         toast("Mention", "Opened global chat.");
         return;
       }
-
-      if (action === "acceptFriend"){
+      if (act === "friendAccept"){
         socket.emit("friend:accept", { from: it.payload });
-        toast("Friends", `Accepted ${it.payload}.`);
-        // Remove from local state quickly
-        if (social?.incoming) social.incoming = social.incoming.filter(x => x !== it.payload);
+        social.incoming = (social.incoming||[]).filter(x=>x!==it.payload);
         updateBadges();
-        renderSidebarInbox();
+        toast("Friends", `Accepted ${it.payload}.`);
+        closeModal();
         return;
       }
-
-      if (action === "acceptInvite"){
+      if (act === "inviteAccept"){
         socket.emit("groupInvite:accept", { id: it.payload.id });
-        toast("Group", "Invite accepted.");
-        // Remove locally
-        window.__groupInvitesCache = invites.filter(x => x.id !== it.payload.id);
+        groupInvitesCache = groupInvitesCache.filter(x=>x.id!==it.payload.id);
         updateBadges();
-        renderSidebarInbox();
+        toast("Group", "Invite accepted.");
+        closeModal();
         return;
       }
     });
   });
-
-  updateBadges();
 }
 
-// ------------------------- Openers -------------------------
-function openGlobal(force){
-  currentDM = null;
-  currentGroupId = null;
-  setView("global");
+// -------------------- Settings + Menu --------------------
+function openMenu(){
+  if (!me) return;
 
-  if (tabGlobal) tabGlobal.classList.add("primary");
-  if (tabMessages) tabMessages.classList.remove("primary");
-  if (tabInbox) tabInbox.classList.remove("primary");
+  const guestNote = isGuest ? `<div class="muted">Guest mode: settings aren’t saved.</div>` : ``;
 
-  if (force){
-    clearChat();
-    globalCache.forEach(m => addMessageToUI(m, { scope:"global" }));
-  }
-  socket.emit("requestGlobalHistory");
-  renderSidebarGlobal();
-}
-
-function openDM(user){
-  if (isGuest){
-    toast("Guests", "Guests can’t DM. Log in to use DMs.");
-    return;
-  }
-  if (!user) return;
-  currentDM = user;
-  currentGroupId = null;
-  setView("dm", user);
-
-  if (tabGlobal) tabGlobal.classList.remove("primary");
-  if (tabMessages) tabMessages.classList.add("primary");
-  if (tabInbox) tabInbox.classList.remove("primary");
-
-  // Clear unread for this DM
-  unreadDM.set(user, 0);
-  updateBadges();
-
-  clearChat();
-  socket.emit("dm:history", { withUser: user });
-  renderSidebarMessages();
-}
-
-function openGroup(gid){
-  if (isGuest) return;
-  if (!gid) return;
-  currentGroupId = gid;
-  currentDM = null;
-  setView("group", gid);
-
-  if (tabGlobal) tabGlobal.classList.remove("primary");
-  if (tabMessages) tabMessages.classList.add("primary");
-  if (tabInbox) tabInbox.classList.remove("primary");
-
-  // Clear unread for this group
-  unreadGroup.set(gid, 0);
-  updateBadges();
-
-  clearChat();
-  socket.emit("group:history", { groupId: gid });
-  renderSidebarMessages();
-}
-
-// ------------------------- Group management modal -------------------------
-function openGroupManage(gid){
-  const meta = groupMeta.get(gid);
-  if (!meta) return;
-
-  const isOwner = meta.owner === me;
-
-  const membersHtml = (meta.members || []).map(u => `
-    <div class="row" data-member="${escapeHtml(u)}" title="${u===me ? "Right-click your name to leave" : ""}">
-      <div class="rowLeft">
-        <div class="statusDot ${onlineUsers.some(x=>x.user===u)?"on":""}"></div>
-        <div class="nameCol">
-          <div class="rowName">${escapeHtml(u)}${u===meta.owner ? " (Owner)" : ""}${u===me ? " (You)" : ""}</div>
-          <div class="rowSub">member</div>
-        </div>
-      </div>
-
-      ${isOwner && u!==meta.owner ? `<button class="btn small" data-remove="${escapeHtml(u)}">Remove</button>` : ``}
-    </div>
-  `).join("");
-
-  openModal("Group settings", `
+  openModal("Account", `
     <div style="display:flex;flex-direction:column;gap:10px">
-      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px">
-        <div style="min-width:0">
-          <div style="font-weight:950;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(meta.name)}</div>
-          <div style="font-size:12px;color:var(--muted)">${escapeHtml(meta.id)}</div>
-        </div>
-        <button class="btn small" id="closeG">Close</button>
-      </div>
-
-      <div style="padding:12px;border:1px solid var(--stroke);border-radius:14px;background:rgba(255,255,255,.02)">
-        <div style="font-weight:900;font-size:12px;margin-bottom:8px">Members</div>
-        <div style="display:flex;flex-direction:column;gap:8px" id="membersList">${membersHtml}</div>
-        <div style="font-size:11px;color:var(--muted);margin-top:10px">
-          Tip: Right-click your own name to leave.
+      <div class="row" id="menuProfile">
+        <div class="rowLeft">
+          <div class="statusDot on"></div>
+          <div class="nameCol">
+            <div class="rowName">Profile</div>
+            <div class="rowSub">view your profile</div>
+          </div>
         </div>
       </div>
 
-      ${isOwner ? `
-        <div style="display:flex;flex-direction:column;gap:10px">
-          <div style="font-weight:900;font-size:12px">Owner controls</div>
-
-          <div style="display:flex;gap:10px">
-            <input id="renameGroup" class="field" placeholder="Rename group…" />
-            <button class="btn small" id="renameBtn">Rename</button>
+      <div class="row" id="menuSettings">
+        <div class="rowLeft">
+          <div class="statusDot on"></div>
+          <div class="nameCol">
+            <div class="rowName">Settings</div>
+            <div class="rowSub">cursor, sounds, filters</div>
           </div>
-
-          <div style="display:flex;gap:10px">
-            <input id="addUser" class="field" placeholder="Add member (username)" />
-            <button class="btn small primary" id="addBtn">Add</button>
-          </div>
-
-          <div style="display:flex;gap:10px">
-            <input id="transferUser" class="field" placeholder="Transfer ownership to…" />
-            <button class="btn small" id="transferBtn">Transfer</button>
-          </div>
-
-          <button class="btn" id="deleteBtn" style="border-color:rgba(255,77,77,.35)">Delete group</button>
         </div>
-      ` : `
-        <button class="btn" id="leaveBtn" style="border-color:rgba(255,77,77,.35)">Leave group</button>
-      `}
+      </div>
+
+      <div class="row" id="menuLogout" style="border-color:rgba(255,82,82,.35)">
+        <div class="rowLeft">
+          <div class="statusDot on"></div>
+          <div class="nameCol">
+            <div class="rowName">Log out</div>
+            <div class="rowSub">end session</div>
+          </div>
+        </div>
+      </div>
+
+      ${guestNote}
     </div>
   `);
 
-  const closeG = $("closeG");
-  if (closeG) closeG.onclick = closeModal;
+  const p = $("menuProfile");
+  const s = $("menuSettings");
+  const l = $("menuLogout");
 
-  // Remove member (owner)
-  if (modalBody){
-    modalBody.querySelectorAll("[data-remove]").forEach(btn=>{
-      btn.addEventListener("click",(e)=>{
-        e.stopPropagation();
-        const u = btn.getAttribute("data-remove");
-        socket.emit("group:removeMember", { groupId: gid, user: u });
-        toast("Group", `Removing ${u}…`);
-      });
-    });
-
-    // Right click your own name -> leave
-    modalBody.querySelectorAll("[data-member]").forEach(row=>{
-      row.addEventListener("contextmenu",(e)=>{
-        e.preventDefault();
-        const u = row.getAttribute("data-member");
-        if (u !== me) return;
-
-        openModal("Leave group?", `
-          <div style="color:var(--muted);font-size:12px;line-height:1.45">
-            Leave <b>${escapeHtml(meta.name)}</b>? You can be re-added by the owner.
-          </div>
-          <div style="display:flex;gap:10px;margin-top:12px">
-            <button class="btn" id="cancelLeave">Cancel</button>
-            <button class="btn primary" id="confirmLeave">Leave</button>
-          </div>
-        `);
-        const c = $("cancelLeave");
-        const y = $("confirmLeave");
-        if (c) c.onclick = ()=> openGroupManage(gid);
-        if (y) y.onclick = ()=>{
-          closeModal();
-          socket.emit("group:leave", { groupId: gid });
-          toast("Group", "Leaving…");
-        };
-      });
-    });
-  }
-
-  if (isOwner){
-    const addBtn = $("addBtn");
-    const transferBtn = $("transferBtn");
-    const deleteBtn = $("deleteBtn");
-    const renameBtn = $("renameBtn");
-
-    if (addBtn) addBtn.onclick = ()=>{
-      const u = ($("addUser")?.value || "").trim();
-      if (!u) return;
-      socket.emit("group:addMember", { groupId: gid, user: u });
-      toast("Group", `Adding ${u}…`);
-    };
-
-    if (transferBtn) transferBtn.onclick = ()=>{
-      const u = ($("transferUser")?.value || "").trim();
-      if (!u) return;
-      socket.emit("group:transferOwner", { groupId: gid, newOwner: u });
-      toast("Group", `Transferring to ${u}…`);
-    };
-
-    if (renameBtn) renameBtn.onclick = ()=>{
-      const n = ($("renameGroup")?.value || "").trim();
-      if (!n) return;
-      socket.emit("group:rename", { groupId: gid, name: n });
-      toast("Group", "Renaming…");
-    };
-
-    if (deleteBtn) deleteBtn.onclick = ()=>{
-      openModal("Delete group?", `
-        <div style="color:var(--muted);font-size:12px;line-height:1.45">
-          Delete <b>${escapeHtml(meta.name)}</b>? This can’t be undone.
-        </div>
-        <div style="display:flex;gap:10px;margin-top:12px">
-          <button class="btn" id="cancelDel">Cancel</button>
-          <button class="btn primary" id="confirmDel">Delete</button>
-        </div>
-      `);
-      const c = $("cancelDel");
-      const y = $("confirmDel");
-      if (c) c.onclick = ()=> openGroupManage(gid);
-      if (y) y.onclick = ()=>{
-        closeModal();
-        socket.emit("group:delete", { groupId: gid });
-        toast("Group", "Deleting…");
-      };
-    };
-  } else {
-    const leaveBtn = $("leaveBtn");
-    if (leaveBtn) leaveBtn.onclick = ()=>{
-      socket.emit("group:leave", { groupId: gid });
-      closeModal();
-      toast("Group", "Leaving…");
-    };
-  }
+  if (p) p.onclick = ()=>{ closeModal(); openProfile(me); };
+  if (s) s.onclick = ()=>{ closeModal(); openSettings(); };
+  if (l) l.onclick = ()=>{ logout(); };
 }
 
-// ------------------------- Profile modal -------------------------
+function openSettings(){
+  const cur = settings || {
+    theme:"dark",
+    density:0.15,
+    sidebar:0.22,
+    hideMildProfanity:false,
+    cursor:true,
+    sounds:true
+  };
+
+  // draft for preview
+  const draft = {
+    hideMildProfanity: !!cur.hideMildProfanity,
+    cursorEnabled: cur.cursor !== false,
+    cursorMode: cursorMode, // off|dot|trail
+    reduceAnims: reduceAnims
+  };
+
+  openModal("Settings", `
+    <div style="display:flex;flex-direction:column;gap:12px">
+
+      <div class="row" id="setCursor">
+        <div class="rowLeft">
+          <div class="statusDot on"></div>
+          <div class="nameCol">
+            <div class="rowName">Custom cursor</div>
+            <div class="rowSub">Off / Dot / Dot + trail</div>
+          </div>
+        </div>
+        <button class="btn small" id="cursorCycle">Cycle</button>
+      </div>
+
+      <div class="row" id="setReduce">
+        <div class="rowLeft">
+          <div class="statusDot on"></div>
+          <div class="nameCol">
+            <div class="rowName">Reduce animations</div>
+            <div class="rowSub">less motion, fewer effects</div>
+          </div>
+        </div>
+        <button class="btn small" id="reduceToggle">${draft.reduceAnims ? "On" : "Off"}</button>
+      </div>
+
+      <div class="row" id="setFilter">
+        <div class="rowLeft">
+          <div class="statusDot on"></div>
+          <div class="nameCol">
+            <div class="rowName">Hide mild profanity</div>
+            <div class="rowSub">mask common swears as •••</div>
+          </div>
+        </div>
+        <button class="btn small" id="filterToggle">${draft.hideMildProfanity ? "On" : "Off"}</button>
+      </div>
+
+      <div style="display:flex;gap:10px;flex-wrap:wrap">
+        <button class="btn primary" id="saveSettings">Save</button>
+        <button class="btn" id="closeSettings">Close</button>
+      </div>
+
+      <div class="muted" style="line-height:1.45">
+        Note: only logged-in users save settings.
+      </div>
+    </div>
+  `);
+
+  const cursorCycle = $("cursorCycle");
+  const reduceToggle = $("reduceToggle");
+  const filterToggle = $("filterToggle");
+  const saveBtn = $("saveSettings");
+  const closeBtn = $("closeSettings");
+
+  function cycleCursor(){
+    const order = ["off","dot","trail"];
+    const i = Math.max(0, order.indexOf(draft.cursorMode));
+    draft.cursorMode = order[(i+1)%order.length];
+    // preview
+    if (draft.cursorMode === "off"){
+      draft.cursorEnabled = false;
+      setCursorMode("off");
+    } else {
+      draft.cursorEnabled = true;
+      setCursorMode(draft.cursorMode);
+    }
+    toast("Cursor", `Mode: ${draft.cursorMode}`);
+  }
+
+  if (cursorCycle) cursorCycle.onclick = cycleCursor;
+
+  if (reduceToggle) reduceToggle.onclick = ()=>{
+    draft.reduceAnims = !draft.reduceAnims;
+    reduceToggle.textContent = draft.reduceAnims ? "On" : "Off";
+    // preview
+    reduceAnims = draft.reduceAnims;
+  };
+
+  if (filterToggle) filterToggle.onclick = ()=>{
+    draft.hideMildProfanity = !draft.hideMildProfanity;
+    filterToggle.textContent = draft.hideMildProfanity ? "On" : "Off";
+  };
+
+  if (closeBtn) closeBtn.onclick = ()=>{
+    // revert preview to current
+    reduceAnims = !!window.__savedReduceAnims;
+    setCursorMode(window.__savedCursorMode || "trail");
+    closeModal();
+  };
+
+  if (saveBtn) saveBtn.onclick = ()=>{
+    // persist locally (reduce + cursor mode) and server settings
+    window.__savedReduceAnims = draft.reduceAnims;
+    window.__savedCursorMode = draft.cursorMode;
+
+    reduceAnims = draft.reduceAnims;
+    setCursorMode(draft.cursorMode);
+
+    // update server settings only if logged in
+    if (!isGuest){
+      settings = settings || {};
+      settings.hideMildProfanity = draft.hideMildProfanity;
+      settings.cursor = draft.cursorMode !== "off";
+      // keep theme as-is (server defaults already dark minimal)
+      socket.emit("settings:update", settings);
+    }
+
+    toast("Settings", isGuest ? "Applied (guest)" : "Saved");
+    closeModal();
+  };
+}
+
+function logout(){
+  showLoading("logging out…");
+  setTimeout(()=>{
+    localStorage.removeItem("tonkotsu_token");
+    location.reload();
+  }, reduceAnims ? 220 : 420);
+}
+
+// -------------------- Profile --------------------
 function openProfile(user){
   if (!user) return;
 
-  // Guest profile: name only
   const guest = isGuestUser(user);
+
   openModal("Profile", `
     <div style="display:flex;flex-direction:column;gap:10px">
       <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px">
         <div style="min-width:0">
           <div style="font-weight:950;font-size:16px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(user)}</div>
-          <div style="font-size:12px;color:var(--muted)" id="profSub">${guest ? "Guest user" : "loading…"}</div>
+          <div class="muted" id="profSub">${guest ? "Guest user" : "loading…"}</div>
         </div>
         <button class="btn small" id="profClose">Close</button>
       </div>
 
       ${guest ? "" : `
-      <div style="padding:12px;border:1px solid var(--stroke);border-radius:14px;background:rgba(255,255,255,.02)">
-        <div style="font-weight:900;font-size:12px;margin-bottom:8px">Stats</div>
-        <div id="profStats" style="display:flex;flex-direction:column;gap:6px;color:var(--muted);font-size:12px">
-          loading…
+        <div style="border:1px solid var(--stroke);border-radius:14px;background:rgba(255,255,255,.02);padding:12px">
+          <div style="font-weight:950;font-size:12px;margin-bottom:8px">Account</div>
+          <div id="profStats" class="muted" style="display:flex;flex-direction:column;gap:6px">loading…</div>
         </div>
-      </div>
 
-      <div style="display:flex;gap:10px;flex-wrap:wrap">
-        ${(user !== me && !isGuest) ? `<button class="btn" id="dmBtn">DM</button>` : ``}
-        ${(user !== me && !isGuest) ? `<button class="btn" id="friendBtn">Add friend</button>` : ``}
-        ${(user !== me && !isGuest) ? `<button class="btn" id="blockBtn">Block</button>` : ``}
-      </div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap">
+          ${user !== me && !isGuest ? `<button class="btn" id="profDM">DM</button>` : ``}
+          ${user !== me && !isGuest ? `<button class="btn" id="profAdd">Add friend</button>` : ``}
+          ${user !== me && !isGuest ? `<button class="btn" id="profBlock">Block</button>` : ``}
+        </div>
       `}
     </div>
   `);
@@ -925,176 +842,66 @@ function openProfile(user){
   if (pc) pc.onclick = closeModal;
 
   if (!guest){
+    modalBody._profileUser = user;
     socket.emit("profile:get", { user });
-    if (modalBody) modalBody._profileUser = user;
+
+    setTimeout(()=>{
+      const dmBtn = $("profDM");
+      const addBtn = $("profAdd");
+      const blkBtn = $("profBlock");
+
+      if (dmBtn) dmBtn.onclick = ()=>{ closeModal(); openDM(user); };
+      if (addBtn) addBtn.onclick = ()=>{ socket.emit("friend:request", { to:user }); toast("Friends","Request sent."); };
+      if (blkBtn) blkBtn.onclick = ()=>{ socket.emit("user:block", { user }); toast("Blocked", `${user} blocked.`); closeModal(); };
+    }, 0);
   }
-
-  // Bind actions immediately (they’ll work once profile:data arrives)
-  setTimeout(()=>{
-    const dmBtn = $("dmBtn");
-    const friendBtn = $("friendBtn");
-    const blockBtn = $("blockBtn");
-
-    if (dmBtn) dmBtn.onclick = ()=>{
-      closeModal();
-      openDM(user);
-    };
-    if (friendBtn) friendBtn.onclick = ()=>{
-      socket.emit("friend:request", { to: user });
-      toast("Friends", "Request sent.");
-    };
-    if (blockBtn) blockBtn.onclick = ()=>{
-      socket.emit("user:block", { user });
-      toast("Blocked", `${user} blocked.`);
-      closeModal();
-    };
-  }, 0);
 }
 
-// ------------------------- Settings modal (IMPORTANT: preview only, save to apply permanently) -------------------------
-function openSettings(){
+// -------------------- Group creation --------------------
+function openCreateGroup(){
   if (isGuest){
-    openModal("Settings (Guest)", `
-      <div style="color:var(--muted);font-size:12px;line-height:1.45">
-        Guest settings aren’t saved. Log in to save theme/layout.
-      </div>
-      <div style="display:flex;gap:10px;margin-top:12px">
-        <button class="btn primary" id="closeS">Close</button>
-      </div>
-    `);
-    const c = $("closeS");
-    if (c) c.onclick = closeModal;
+    toast("Guests","Guests can’t create groups.");
     return;
   }
 
-  const current = settings || {};
-  const originalTheme = current.theme || "dark";
-  const originalDensity = Number.isFinite(current.density) ? current.density : 0.55;
-
-  // Draft copy for preview changes (does not mutate `settings`)
-  const draft = {
-    theme: originalTheme,
-    density: originalDensity,
-    hideMildProfanity: !!current.hideMildProfanity
-  };
-
-  const themeKeys = ["dark","vortex","abyss","carbon"];
-  const themeIndex = Math.max(0, themeKeys.indexOf(draft.theme));
-
-  openModal("Settings", `
+  openModal("Create group", `
     <div style="display:flex;flex-direction:column;gap:10px">
-
-      <div style="padding:12px;border:1px solid var(--stroke);border-radius:14px;background:rgba(255,255,255,.02)">
-        <div style="font-weight:900;font-size:12px;margin-bottom:8px">Theme</div>
-        <input id="themeSlider" type="range" min="0" max="${themeKeys.length-1}" step="1" value="${themeIndex}" style="width:100%">
-        <div style="font-size:12px;color:var(--muted);margin-top:6px">Current: <b id="themeName">${escapeHtml(draft.theme)}</b></div>
-      </div>
-
-      <div style="padding:12px;border:1px solid var(--stroke);border-radius:14px;background:rgba(255,255,255,.02)">
-        <div style="font-weight:900;font-size:12px;margin-bottom:8px">Layout density</div>
-        <input id="densitySlider" type="range" min="0" max="1" step="0.01" value="${draft.density}" style="width:100%">
-        <div style="font-size:12px;color:var(--muted);margin-top:6px">Compact ↔ Cozy</div>
-      </div>
-
-      <div style="padding:12px;border:1px solid var(--stroke);border-radius:14px;background:rgba(255,255,255,.02)">
-        <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
-          <div style="min-width:180px">
-            <div style="font-weight:900;font-size:12px">Hide mild profanity</div>
-            <div style="font-size:11px;color:var(--muted)">F/S/A words etc masked as •••.</div>
-          </div>
-          <button class="btn small" id="toggleMild">${draft.hideMildProfanity ? "On" : "Off"}</button>
-        </div>
-      </div>
-
-      <div style="display:flex;gap:10px;flex-wrap:wrap">
-        <button class="btn primary" id="saveS">Save</button>
-        <button class="btn" id="closeS">Close</button>
+      <div class="muted">Group name</div>
+      <input class="field" id="gcName" placeholder="Unnamed Group" />
+      <div class="muted">Invite at least 1 user (comma separated)</div>
+      <input class="field" id="gcInv" placeholder="user1, user2" />
+      <button class="btn primary" id="gcGo">Send invites</button>
+      <div class="muted" style="line-height:1.45">
+        Group becomes active after someone accepts.
       </div>
     </div>
   `);
 
-  const themeSlider = $("themeSlider");
-  const densitySlider = $("densitySlider");
-  const themeName = $("themeName");
+  const go = $("gcGo");
+  if (go) go.onclick = ()=>{
+    const name = ($("gcName")?.value || "").trim();
+    const invitesRaw = ($("gcInv")?.value || "").trim();
+    const invites = invitesRaw.split(",").map(s=>s.trim()).filter(Boolean);
 
-  if (themeSlider){
-    themeSlider.addEventListener("input", ()=>{
-      const k = themeKeys[Number(themeSlider.value)];
-      draft.theme = k;
-      if (themeName) themeName.textContent = k;
-      applyTheme(k); // preview only
-    });
-  }
-
-  if (densitySlider){
-    densitySlider.addEventListener("input", ()=>{
-      draft.density = Number(densitySlider.value);
-      applyDensity(draft.density); // preview only
-    });
-  }
-
-  const toggleMild = $("toggleMild");
-  if (toggleMild){
-    toggleMild.onclick = ()=>{
-      draft.hideMildProfanity = !draft.hideMildProfanity;
-      toggleMild.textContent = draft.hideMildProfanity ? "On" : "Off";
-    };
-  }
-
-  const closeS = $("closeS");
-  if (closeS){
-    closeS.onclick = ()=>{
-      // revert preview changes if not saved
-      applyTheme(originalTheme);
-      applyDensity(originalDensity);
-      closeModal();
-    };
-  }
-
-  const saveS = $("saveS");
-  if (saveS){
-    saveS.onclick = ()=>{
-      settings = settings || {};
-      settings.theme = draft.theme;
-      settings.density = draft.density;
-      settings.hideMildProfanity = draft.hideMildProfanity;
-
-      socket.emit("settings:update", settings);
-      toast("Settings", "Saved.");
-      closeModal();
-    };
-  }
+    closeModal();
+    socket.emit("group:createRequest", { name, invites });
+    toast("Group","Invites sent.");
+  };
 }
 
-// ------------------------- Tabs -------------------------
-if (tabGlobal) tabGlobal.addEventListener("click", ()=> openGlobal(true));
-if (tabMessages) tabMessages.addEventListener("click", ()=>{
-  if (tabGlobal) tabGlobal.classList.remove("primary");
-  if (tabMessages) tabMessages.classList.add("primary");
-  if (tabInbox) tabInbox.classList.remove("primary");
-  renderSidebarMessages();
-});
-if (tabInbox) tabInbox.addEventListener("click", ()=>{
-  if (tabGlobal) tabGlobal.classList.remove("primary");
-  if (tabMessages) tabMessages.classList.remove("primary");
-  if (tabInbox) tabInbox.classList.add("primary");
-  renderSidebarInbox();
-});
-
-// ------------------------- Composer -------------------------
+// -------------------- Sending --------------------
 function sendCurrent(){
   if (!me) return;
+  const text = (messageEl?.value || "").trim();
+  if (!text) return;
 
   if (!canSend()){
     cooldownWarn();
     return;
   }
 
-  const text = (messageEl?.value || "").trim();
-  if (!text) return;
-
   startCooldown();
-  if (messageEl) messageEl.value = "";
+  messageEl.value = "";
 
   if (view.type === "global"){
     socket.emit("sendGlobal", { text, ts: now() });
@@ -1107,7 +914,7 @@ function sendCurrent(){
 
 if (sendBtn) sendBtn.addEventListener("click", sendCurrent);
 if (messageEl){
-  messageEl.addEventListener("keydown", (e)=>{
+  messageEl.addEventListener("keydown",(e)=>{
     if (e.key === "Enter" && !e.shiftKey){
       e.preventDefault();
       sendCurrent();
@@ -1115,46 +922,33 @@ if (messageEl){
   });
 }
 
-// ------------------------- Auth buttons -------------------------
-if (settingsBtn) settingsBtn.addEventListener("click", openSettings);
-
-if (logoutBtn){
-  logoutBtn.addEventListener("click", ()=>{
-    showLoading("logging out…");
-    setTimeout(()=>{
-      localStorage.removeItem("tonkotsu_token");
-      location.reload();
-    }, 450);
+// -------------------- Login --------------------
+if (togglePass && passwordEl){
+  togglePass.addEventListener("click", ()=>{
+    const isPw = passwordEl.type === "password";
+    passwordEl.type = isPw ? "text" : "password";
+    togglePass.textContent = isPw ? "◎" : "◉";
   });
 }
 
-if (loginBtn){
-  loginBtn.addEventListener("click", ()=>{
-    if (loginOverlay) loginOverlay.classList.remove("hidden");
-  });
+function tryResume(){
+  if (token){
+    showLoading("resuming session…");
+    socket.emit("resume", { token });
+  }
 }
 
-// Shake login
-function shakeLogin(){
-  const card = document.querySelector(".loginCard");
-  if (!card) return;
-  card.classList.add("shake");
-  setTimeout(()=> card.classList.remove("shake"), 380);
-}
-
-// Join
 if (joinBtn){
   joinBtn.addEventListener("click", ()=>{
     const u = (usernameEl?.value || "").trim();
     const p = (passwordEl?.value || "");
-
     if (!u || !p){
-      shakeLogin();
+      $("loginCard")?.classList.add("shake");
+      setTimeout(()=> $("loginCard")?.classList.remove("shake"), 350);
       return;
     }
-
     showLoading("logging in…");
-    socket.emit("login", { username: u, password: p, guest:false });
+    socket.emit("login", { username:u, password:p, guest:false });
   });
 }
 
@@ -1171,20 +965,23 @@ if (passwordEl && joinBtn){
   });
 }
 
-// ------------------------- Session restore on refresh -------------------------
-function tryResume(){
-  if (token){
-    socket.emit("resume", { token });
-    showLoading("resuming session…");
-  }
-}
-tryResume();
+// -------------------- UI binds --------------------
+if (inboxBtn) inboxBtn.addEventListener("click", openInbox);
+if (createGroupBtn) createGroupBtn.addEventListener("click", openCreateGroup);
+if (mePill) mePill.addEventListener("click", openMenu);
 
-// ------------------------- Socket events -------------------------
+// -------------------- Socket events --------------------
 socket.on("resumeFail", ()=>{
   localStorage.removeItem("tonkotsu_token");
   token = null;
   hideLoading();
+});
+
+socket.on("loginError",(msg)=>{
+  hideLoading();
+  $("loginCard")?.classList.add("shake");
+  setTimeout(()=> $("loginCard")?.classList.remove("shake"), 350);
+  toast("Login failed", msg || "Try again.");
 });
 
 socket.on("loginSuccess",(data)=>{
@@ -1193,258 +990,194 @@ socket.on("loginSuccess",(data)=>{
   me = data.username;
   isGuest = !!data.guest;
 
-  settings = data.settings || settings || { theme:"dark", density:0.55, hideMildProfanity:false };
+  settings = data.settings || settings || { theme:"dark", density:0.15, sidebar:0.22, hideMildProfanity:false, cursor:true, sounds:true };
   social = data.social || social || { friends:[], incoming:[], outgoing:[], blocked:[] };
   xp = data.xp ?? null;
 
-  // Apply immediately (server-controlled defaults)
-  applyTheme(settings?.theme || "dark");
-  applyDensity(settings?.density ?? 0.55);
-
-  // show app
-  if (loginOverlay) loginOverlay.classList.add("hidden");
-  if (app) app.classList.add("show");
-
-  if (mePill) mePill.style.display = "flex";
-  if (meName) meName.textContent = me;
-
-  // token store
   if (!isGuest && data.token){
     localStorage.setItem("tonkotsu_token", data.token);
     token = data.token;
   }
 
-  // guest limitations toggles
-  if (isGuest){
-    if (settingsBtn) settingsBtn.style.display="none";
-    if (logoutBtn) logoutBtn.style.display="none";
-    if (loginBtn) loginBtn.style.display="inline-flex";
-  } else {
-    if (settingsBtn) settingsBtn.style.display="inline-flex";
-    if (logoutBtn) logoutBtn.style.display="inline-flex";
-    if (loginBtn) loginBtn.style.display="none";
-  }
+  // show app
+  if (loginOverlay) loginOverlay.classList.add("hidden");
+  if (mePill) mePill.style.display = "flex";
+  if (meName) meName.textContent = me;
+  if (meSub) meSub.textContent = isGuest ? "Guest" : "click for menu";
 
-  updateBadges();
-  toast("Welcome", isGuest ? "Joined as Guest" : `Logged in as ${me}`);
+  // Cursor from settings
+  // Default: trail, but if user saved off -> off
+  const savedMode = window.__savedCursorMode || (settings.cursor === false ? "off" : "trail");
+  setCursorMode(savedMode);
 
-  // kick off state pulls
-  openGlobal(true);
+  // Reduce anims persisted locally
+  reduceAnims = !!window.__savedReduceAnims;
+
+  if (cooldownLabel) cooldownLabel.textContent = `Cooldown: ${cooldownSeconds()}s`;
+
+  toast("Welcome", isGuest ? "Joined as guest" : `Logged in as ${me}`);
+
+  // request initial
+  openGlobal();
+  socket.emit("requestGlobalHistory");
   if (!isGuest){
-    socket.emit("groups:list");
     socket.emit("social:sync");
+    socket.emit("groups:list");
     socket.emit("inbox:get");
   }
-});
 
-socket.on("loginError",(msg)=>{
-  hideLoading();
-  shakeLogin();
-  toast("Login failed", msg || "Try again.");
+  renderMessagesList();
 });
 
 socket.on("settings",(s)=>{
   settings = s || settings;
-  applyTheme(settings?.theme || "dark");
-  applyDensity(settings?.density ?? 0.55);
+  // cursor setting only indicates enabled; mode is local
+  if (settings?.cursor === false){
+    setCursorMode("off");
+    window.__savedCursorMode = "off";
+  }
 });
 
 socket.on("social:update",(s)=>{
   social = s || social;
   updateBadges();
-  if (tabInbox?.classList.contains("primary")) renderSidebarInbox();
 });
 
-socket.on("inbox:update",(counts)=>{
-  // counts: { friendRequests, groupInvites }
-  // we’ll fetch full list via inbox:get anyway; this is for badge speed
+socket.on("inbox:update", ()=>{
+  // counts-only event; we still rely on inbox:data for full lists
   updateBadges();
 });
 
 socket.on("inbox:data",(data)=>{
-  // { friendRequests:[...], groupInvites:[{id,from,name,ts}] }
-  window.__groupInvitesCache = Array.isArray(data?.groupInvites) ? data.groupInvites : [];
-  // friendRequests already mirrored in social.incoming; but keep safe
-  if (social && Array.isArray(data?.friendRequests)) {
+  groupInvitesCache = Array.isArray(data?.groupInvites) ? data.groupInvites : [];
+  if (social && Array.isArray(data?.friendRequests)){
     social.incoming = data.friendRequests;
   }
   updateBadges();
-  if (tabInbox?.classList.contains("primary")) renderSidebarInbox();
-});
-
-socket.on("xp:update",(x)=>{
-  xp = x;
-  // You can hook a UI bar here if your index.html has one.
 });
 
 socket.on("onlineUsers",(list)=>{
   onlineUsers = Array.isArray(list) ? list : [];
-  if (view.type === "global") renderSidebarGlobal();
-  if (tabMessages?.classList.contains("primary")) renderSidebarMessages();
+  renderOnline();
+  renderMessagesList();
 });
 
 socket.on("history",(msgs)=>{
-  globalCache = (Array.isArray(msgs)?msgs:[])
-    .filter(m => Number.isFinite(new Date(m.ts).getTime()));
+  globalCache = Array.isArray(msgs) ? msgs : [];
   if (view.type === "global"){
     clearChat();
-    globalCache.forEach(m=> addMessageToUI(m, { scope:"global" }));
+    globalCache.forEach(m=> addMessageToUI(m,"global"));
   }
 });
 
-socket.on("globalMessage",(m)=>{
-  if (!m || !Number.isFinite(new Date(m.ts).getTime())) return;
-  globalCache.push(m);
-  if (globalCache.length > 250) globalCache.shift();
-  if (view.type === "global") addMessageToUI(m, { scope:"global" });
+socket.on("globalMessage",(msg)=>{
+  if (!msg) return;
+  globalCache.push(msg);
+  if (globalCache.length > 300) globalCache.shift();
+  if (view.type === "global") addMessageToUI(msg,"global");
 });
 
-socket.on("sendError",(e)=>{
-  toast("Action blocked", e?.reason || "Blocked.");
-});
-
-// DM history + message
-socket.on("dm:history", ({ withUser, msgs } = {})=>{
+socket.on("dm:history",({ withUser, msgs }={})=>{
   const other = withUser;
   const list = Array.isArray(msgs) ? msgs : [];
   dmCache.set(other, list);
 
   if (view.type === "dm" && currentDM === other){
     clearChat();
-    list.forEach(m => addMessageToUI(m, { scope:"dm", from: other }));
+    list.forEach(m=> addMessageToUI({user: other, text:m.text, ts:m.ts},"dm"));
   }
+  renderMessagesList();
 });
 
-socket.on("dm:message", ({ from, msg } = {})=>{
+socket.on("dm:message",({ from, msg }={})=>{
   if (!from || !msg) return;
   if (!dmCache.has(from)) dmCache.set(from, []);
   dmCache.get(from).push(msg);
   if (dmCache.get(from).length > 250) dmCache.get(from).shift();
 
-  // unread
-  if (!(view.type === "dm" && currentDM === from)){
+  if (!(view.type==="dm" && currentDM===from)){
     unreadDM.set(from, (unreadDM.get(from)||0) + 1);
     updateBadges();
+  } else {
+    addMessageToUI({user: from, text: msg.text, ts: msg.ts},"dm");
   }
-
-  if (view.type === "dm" && currentDM === from){
-    addMessageToUI(msg, { scope:"dm", from });
-  }
-
-  if (tabMessages?.classList.contains("primary")) renderSidebarMessages();
+  renderMessagesList();
 });
 
-// Groups list
 socket.on("groups:list",(list)=>{
-  if (isGuest) return;
-
   groupMeta.clear();
   (Array.isArray(list)?list:[]).forEach(g=>{
-    groupMeta.set(g.id, { id:g.id, name:g.name, owner:g.owner, members:Array.isArray(g.members)?g.members:[] });
+    groupMeta.set(g.id, { id:g.id, name:g.name, owner:g.owner, members:g.members||[] });
   });
-
-  if (tabMessages?.classList.contains("primary")) renderSidebarMessages();
+  renderMessagesList();
 });
 
-// Group request created (invites-required flow)
-socket.on("group:requestCreated",(g)=>{
-  if (!g) return;
-  toast("Group", `Invites sent for “${g.name}”`);
-});
-
-// Group history
-socket.on("group:history",({ groupId, meta, msgs })=>{
-  if (!groupId || !meta) return;
-
-  groupMeta.set(groupId, meta);
+socket.on("group:history",({ groupId, meta, msgs }={})=>{
+  if (!groupId) return;
+  if (meta) groupMeta.set(groupId, meta);
   groupCache.set(groupId, Array.isArray(msgs)?msgs:[]);
-  currentGroupId = groupId;
 
   setView("group", groupId);
-
   clearChat();
-  (msgs || []).forEach(m=> addMessageToUI(m, { scope:"group", groupId }));
-
-  // Provide a manage link in hint
-  if (chatHint){
-    chatHint.innerHTML = `members: <b style="color:var(--text)">${meta.members.length}</b> • <span style="text-decoration:underline;cursor:pointer" id="manageGroupLink">manage</span>`;
-    setTimeout(()=>{
-      const link = document.getElementById("manageGroupLink");
-      if (link) link.onclick = ()=> openGroupManage(groupId);
-    }, 0);
-  }
-
-  // clear unread
-  unreadGroup.set(groupId, 0);
-  updateBadges();
+  (msgs||[]).forEach(m=> addMessageToUI(m,"group"));
+  renderMessagesList();
 });
 
-// Group message
-socket.on("group:message",({ groupId, msg })=>{
+socket.on("group:message",({ groupId, msg }={})=>{
   if (!groupId || !msg) return;
-
   if (!groupCache.has(groupId)) groupCache.set(groupId, []);
   groupCache.get(groupId).push(msg);
-  if (groupCache.get(groupId).length > 350) groupCache.get(groupId).shift();
 
-  const active = (view.type === "group" && currentGroupId === groupId);
-
-  if (!active){
+  if (!(view.type==="group" && currentGroupId===groupId)){
     unreadGroup.set(groupId, (unreadGroup.get(groupId)||0) + 1);
     updateBadges();
   } else {
-    addMessageToUI(msg, { scope:"group", groupId });
+    addMessageToUI(msg,"group");
   }
-
-  if (tabMessages?.classList.contains("primary")) renderSidebarMessages();
+  renderMessagesList();
 });
 
-// Group meta update
-socket.on("group:meta",({ groupId, meta, name, owner, members })=>{
-  // server may send either {groupId, meta:{...}} or legacy {groupId,name,owner,members}
-  const incomingMeta = meta || { id: groupId, name, owner, members };
-  if (!groupId || !incomingMeta) return;
-
-  const m = groupMeta.get(groupId) || { id: groupId, name: incomingMeta.name || groupId, owner: incomingMeta.owner || "—", members: incomingMeta.members || [] };
-  m.name = incomingMeta.name ?? m.name;
-  m.owner = incomingMeta.owner ?? m.owner;
-  if (Array.isArray(incomingMeta.members)) m.members = incomingMeta.members;
+socket.on("group:meta",({ groupId, meta, name, owner, members }={})=>{
+  if (!groupId) return;
+  const incoming = meta || { id:groupId, name, owner, members };
+  const m = groupMeta.get(groupId) || { id:groupId, name:"Unnamed Group", owner:"—", members:[] };
+  if (incoming.name) m.name = incoming.name;
+  if (incoming.owner) m.owner = incoming.owner;
+  if (Array.isArray(incoming.members)) m.members = incoming.members;
   groupMeta.set(groupId, m);
 
-  if (view.type === "group" && currentGroupId === groupId && chatTitle){
+  if (view.type==="group" && currentGroupId===groupId){
     chatTitle.textContent = `Group — ${m.name}`;
   }
-  if (tabMessages?.classList.contains("primary")) renderSidebarMessages();
+  renderMessagesList();
 });
 
-// Group left/deleted
-socket.on("group:left",({ groupId })=>{
-  toast("Group", "You left the group.");
+socket.on("group:left",({ groupId }={})=>{
+  toast("Group","Left group.");
   unreadGroup.delete(groupId);
   groupMeta.delete(groupId);
   groupCache.delete(groupId);
   updateBadges();
-  openGlobal(true);
+  openGlobal();
   socket.emit("groups:list");
 });
-socket.on("group:deleted",({ groupId })=>{
-  toast("Group", "Group deleted.");
+
+socket.on("group:deleted",({ groupId }={})=>{
+  toast("Group","Group deleted.");
   unreadGroup.delete(groupId);
   groupMeta.delete(groupId);
   groupCache.delete(groupId);
   updateBadges();
-  openGlobal(true);
+  openGlobal();
   socket.emit("groups:list");
 });
 
-// Profile data
 socket.on("profile:data",(p)=>{
   const target = modalBody?._profileUser;
   if (!target || !p || p.user !== target) return;
 
   const sub = $("profSub");
   const stats = $("profStats");
-
   if (p.guest){
     if (sub) sub.textContent = "Guest user";
     if (stats) stats.innerHTML = "";
@@ -1459,20 +1192,17 @@ socket.on("profile:data",(p)=>{
 
   if (sub) sub.textContent = `Level ${level} • ${msgs} messages`;
 
-  // Simple XP bar that won’t break layout
-  const pct = xpNext > 0 ? Math.max(0, Math.min(1, xpNow / xpNext)) : 0;
+  const pct = xpNext > 0 ? clamp(xpNow/xpNext, 0, 1) : 0;
 
   if (stats){
     stats.innerHTML = `
-      <div><b style="color:var(--text)">Account created:</b> ${escapeHtml(created)}</div>
-      <div><b style="color:var(--text)">Level:</b> ${level}</div>
+      <div><b style="color:var(--text)">Created:</b> ${escapeHtml(created)}</div>
       <div><b style="color:var(--text)">Messages:</b> ${msgs}</div>
       <div style="margin-top:8px">
         <div style="display:flex;justify-content:space-between;gap:10px">
-          <div style="color:var(--muted)">XP</div>
-          <div style="color:var(--muted)">${xpNow} / ${xpNext}</div>
+          <div>XP</div><div>${xpNow}/${xpNext}</div>
         </div>
-        <div style="margin-top:6px;height:10px;border-radius:999px;background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.10);overflow:hidden">
+        <div style="margin-top:6px;height:10px;border-radius:999px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.10);overflow:hidden">
           <div style="height:100%;width:${Math.round(pct*100)}%;background:rgba(255,255,255,.18)"></div>
         </div>
       </div>
@@ -1480,13 +1210,14 @@ socket.on("profile:data",(p)=>{
   }
 });
 
-// ------------------------- Boot UI defaults -------------------------
-applyTheme("dark");
-applyDensity(0.55);
+// -------------------- Init --------------------
+setCursorMode("trail");
+requestAnimationFrame(cursorTick);
+tryResume();
 
-// Default tab state: Global
-if (tabGlobal) tabGlobal.classList.add("primary");
-renderSidebarGlobal();
+// Default global on load (before login, just UI state)
+setView("global");
+renderOnline();
+renderMessagesList();
 
-// If user opens app without logging in, keep login overlay visible
-// If you later want click-outside-to-close for login overlay, add it here.
+// App start hidden behind overlay; server will show once loginSuccess fires
