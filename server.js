@@ -1,4 +1,4 @@
-// server.js (ESM) — Render-ready, persistence-ready, groups/invites, XP, statuses, bots, mentions
+// server.js (ESM) — Render-ready, disk-ready persistence, compact app UI support, bots, statuses, cooldowns
 import express from "express";
 import http from "http";
 import { Server } from "socket.io";
@@ -13,10 +13,26 @@ const io = new Server(server, { cors: { origin: "*" } });
 app.use(express.static("public"));
 
 /**
- * Persistence (Render Persistent Disk mounted at /data)
- * Stores: /data/tonkotsu.json (or env TONKOTSU_DB_FILE)
+ * -------------------------
+ * Persistence (Render disk-ready)
+ * -------------------------
+ * If you attach a Render Persistent Disk mounted at /data,
+ * it will store to: /data/tonkotsu.json
  */
 const DISK_FILE = process.env.TONKOTSU_DB_FILE || "/data/tonkotsu.json";
+
+function safeJson(obj) {
+  return JSON.stringify(obj, null, 2);
+}
+
+const db = {
+  users: {},        // username -> user record
+  tokens: {},       // token -> username
+  global: [],       // [{user,text,ts}]
+  dms: {},          // "a|b" -> [{user,text,ts}]
+  groups: {},       // gid -> {id,name,owner,members:[...], msgs:[...], active:boolean, pendingInvites:[...]}
+  groupInvites: {}  // username -> [{id, from, name, ts}]
+};
 
 let saveTimer = null;
 function scheduleSave() {
@@ -24,28 +40,66 @@ function scheduleSave() {
   saveTimer = setTimeout(() => {
     saveTimer = null;
     saveToDisk().catch(() => {});
-  }, 700);
+  }, 650);
 }
 
-function safeJson(obj) { return JSON.stringify(obj, null, 2); }
+async function loadFromDisk() {
+  try {
+    const dir = path.dirname(DISK_FILE);
+    if (!fs.existsSync(dir)) return;
+    if (!fs.existsSync(DISK_FILE)) return;
+
+    const raw = await fs.promises.readFile(DISK_FILE, "utf8");
+    const parsed = JSON.parse(raw);
+
+    if (parsed && typeof parsed === "object") {
+      db.users = parsed.users || db.users;
+      db.tokens = parsed.tokens || {};
+      db.global = parsed.global || [];
+      db.dms = parsed.dms || {};
+      db.groups = parsed.groups || {};
+      db.groupInvites = parsed.groupInvites || {};
+    }
+    console.log("[db] loaded", DISK_FILE);
+  } catch (e) {
+    console.log("[db] load failed:", e?.message || e);
+  }
+}
+
+async function saveToDisk() {
+  try {
+    const dir = path.dirname(DISK_FILE);
+    if (!fs.existsSync(dir)) return;
+    const payload = {
+      users: db.users,
+      tokens: db.tokens,
+      global: db.global,
+      dms: db.dms,
+      groups: db.groups,
+      groupInvites: db.groupInvites
+    };
+    await fs.promises.writeFile(DISK_FILE, safeJson(payload), "utf8");
+  } catch {
+    // ignore
+  }
+}
+
+await loadFromDisk();
+
+/* -------------------------
+   Helpers
+------------------------- */
 function now() { return Date.now(); }
-
-const db = {
-  users: {},        // username -> user record
-  tokens: {},       // token -> username
-  global: [],       // [{user,text,ts}]
-  dms: {},          // "a|b" -> [{user,text,ts}]
-  groups: {},       // gid -> group record
-  groupInvites: {}  // username -> [{id, from, name, ts}]
-};
-
 function normalizeUser(u) { return String(u || "").trim(); }
-function usernameValid(u) { return /^[A-Za-z0-9_.]{3,20}$/.test(u); }
+
 function dmKey(a, b) {
   const x = String(a), y = String(b);
   return (x.localeCompare(y) <= 0) ? `${x}|${y}` : `${y}|${x}`;
 }
-function isGuestName(u) { return /^Guest\d{4,5}$/.test(String(u)); }
+
+function usernameValid(u) {
+  return /^[A-Za-z0-9_.]{3,20}$/.test(u);
+}
 
 const USERNAME_BLOCK_PATTERNS = [
   /porn|onlyfans|nude|nsfw|sex|xxx/i,
@@ -53,48 +107,48 @@ const USERNAME_BLOCK_PATTERNS = [
   /rape|rapist/i,
   /hitler|nazi/i
 ];
+
 function badUsername(u) {
   const s = String(u || "");
   return USERNAME_BLOCK_PATTERNS.some(rx => rx.test(s));
 }
 
-// Hard filter for obviously unsafe requests / dox / sexual solicitation etc.
 const HARD_BLOCK_PATTERNS = [
   /\b(kys|kill\s+yourself)\b/i,
   /\b(i('?m| am)?\s+going\s+to\s+kill|i('?m| am)?\s+gonna\s+kill)\b/i,
   /\b(send\s+nudes|nude\s+pics)\b/i,
   /\b(dox|doxx|address|phone\s*number)\b/i
 ];
+
 function shouldHardHide(text) {
   const t = String(text || "");
   return HARD_BLOCK_PATTERNS.some(rx => rx.test(t));
 }
 
-// Password hashing
 function hashPass(pw) {
   const salt = crypto.randomBytes(16).toString("hex");
   const derived = crypto.pbkdf2Sync(String(pw), salt, 120000, 32, "sha256").toString("hex");
   return `${salt}:${derived}`;
 }
+
 function checkPass(pw, stored) {
   const [salt, derived] = String(stored || "").split(":");
   if (!salt || !derived) return false;
   const test = crypto.pbkdf2Sync(String(pw), salt, 120000, 32, "sha256").toString("hex");
   return crypto.timingSafeEqual(Buffer.from(test), Buffer.from(derived));
 }
+
 function newToken() { return crypto.randomBytes(24).toString("hex"); }
 
-// XP model
 function xpNext(level) {
   const base = 120;
-  const growth = Math.floor(base * Math.pow(Math.max(1, level), 1.5));
+  const growth = Math.floor(base * Math.pow(Math.max(1, level), 1.45));
   return Math.max(base, growth);
 }
-function addXP(userRec, amount) {
-  if (!userRec || userRec.guest) return { leveledUp: false };
-  if (!userRec.xp) userRec.xp = { level: 1, xp: 0, next: xpNext(1) };
 
-  const beforeLevel = userRec.xp.level;
+function addXP(userRec, amount) {
+  if (!userRec || userRec.guest) return;
+  if (!userRec.xp) userRec.xp = { level: 1, xp: 0, next: xpNext(1) };
   userRec.xp.xp += amount;
 
   while (userRec.xp.xp >= userRec.xp.next) {
@@ -102,18 +156,20 @@ function addXP(userRec, amount) {
     userRec.xp.level += 1;
     userRec.xp.next = xpNext(userRec.xp.level);
   }
-  return { leveledUp: userRec.xp.level > beforeLevel };
 }
 
-function defaultSettings() {
-  return {
-    density: 0.15,         // compact
-    sidebar: 0.24,         // compact sidebar
-    cursorMode: "trail",   // off | normal | trail
-    reduceAnimations: false,
-    unblurBlocked: false,  // default blur blocked users’ messages
-    sounds: true           // can be auto-muted by DND on client
-  };
+/* -------------------------
+   Reserved “real-looking” bots
+   - You cannot register/login as these usernames
+------------------------- */
+const RESERVED_BOT_NAMES = new Set([
+  "oregon6767", "theowner", "zippyfn", "mikachu", "voidd", "lilsam",
+  "xavier09", "idkbro", "noxity", "bruhmoment", "sarahxoxo",
+  "jaylen", "ghosted", "vex", "angel", "kairo", "miya", "marz", "danny"
+]);
+
+function isReservedName(u) {
+  return RESERVED_BOT_NAMES.has(String(u || "").toLowerCase());
 }
 
 function ensureUser(username, password) {
@@ -123,13 +179,25 @@ function ensureUser(username, password) {
       pass: hashPass(password),
       createdAt: now(),
       guest: false,
-      status: "online", // online|idle|dnd|invisible
       bio: "",
-      settings: defaultSettings(),
-      social: { friends: [], incoming: [], outgoing: [], blocked: [] },
+      status: "online", // online | idle | dnd | invisible
+      settings: {
+        density: 0.18,     // compact
+        sidebar: 0.24,     // narrow
+        cursorMode: "trail", // off | dot | trail
+        sounds: true,
+        reduceAnimations: false
+      },
+      social: {
+        friends: [],
+        incoming: [],
+        outgoing: [],
+        blocked: []
+      },
       stats: { messages: 0 },
       xp: { level: 1, xp: 0, next: xpNext(1) },
-      mutes: { global: false, dms: [], groups: [] }
+      // client-side only uses these to avoid “red pings” for global
+      notifications: { mentions: 0 }
     };
   }
   return db.users[username];
@@ -139,59 +207,51 @@ function publicProfile(username) {
   const u = db.users[username];
   if (!u) return null;
   if (u.guest) return { user: username, guest: true };
+
   return {
     user: username,
     guest: false,
     createdAt: u.createdAt,
-    status: u.status || "online",
-    bio: u.bio || "",
     level: u.xp?.level ?? 1,
     xp: u.xp?.xp ?? 0,
     next: u.xp?.next ?? xpNext(1),
-    messages: u.stats?.messages ?? 0
+    messages: u.stats?.messages ?? 0,
+    bio: String(u.bio || "").slice(0, 200),
+    status: u.status || "online"
   };
 }
 
-// Online tracking
+/* -------------------------
+   Online tracking
+------------------------- */
 const socketToUser = new Map(); // socket.id -> username
-const online = new Set();       // tracks *currently connected* usernames (including bots)
-const onlineHumanSockets = new Map(); // username -> count sockets
+const online = new Set();       // usernames (excluding invisible)
+const statusByUser = new Map(); // username -> status
 
-function isVisibleStatus(status) {
-  return status !== "invisible";
-}
-
-function onlineListPayload() {
-  // only show online users whose status is not invisible
-  const arr = Array.from(online)
-    .filter(u => {
-      const rec = db.users[u];
-      if (!rec) return true; // guests
-      return isVisibleStatus(rec.status || "online");
-    })
-    .sort((a, b) => a.localeCompare(b))
-    .map(user => {
-      const rec = db.users[user];
-      const status = rec?.status || "online";
-      return { user, status, guest: isGuestName(user) || rec?.guest === true };
-    });
-  return arr;
+function effectiveOnlineList() {
+  // Hide invisible users from online list
+  const list = Array.from(statusByUser.entries())
+    .filter(([u, st]) => st !== "invisible")
+    .map(([u, st]) => ({ user: u, status: st }))
+    .sort((a, b) => a.user.localeCompare(b.user));
+  return list;
 }
 
 function emitOnline() {
-  io.emit("onlineUsers", onlineListPayload());
+  io.emit("onlineUsers", effectiveOnlineList());
 }
 
 function emitSocial(username) {
   const u = db.users[username];
   if (!u || u.guest) return;
+
   io.to(username).emit("social:update", u.social);
 
   const invites = db.groupInvites[username] || [];
   io.to(username).emit("inbox:update", {
     friendRequests: u.social.incoming.length,
     groupInvites: invites.length,
-    mentions: 0 // client tracks mention count locally; server is stateless for mentions
+    mentions: u.notifications?.mentions ?? 0
   });
 }
 
@@ -211,185 +271,183 @@ function getOrCreateDM(key) {
   return db.dms[key];
 }
 
-// Disk load/save
-async function loadFromDisk() {
-  try {
-    if (!fs.existsSync(DISK_FILE)) return;
-    const raw = await fs.promises.readFile(DISK_FILE, "utf8");
-    const parsed = JSON.parse(raw);
+/* -------------------------
+   Bots: “realistic chat load”
+   - Server-side so ALL users see the same messages
+   - Random join/leave (status toggles) + occasional guests
+------------------------- */
+const BOT_NAMES = Array.from(RESERVED_BOT_NAMES);
 
-    if (parsed && typeof parsed === "object") {
-      db.users = parsed.users || db.users;
-      db.tokens = parsed.tokens || {};
-      db.global = parsed.global || [];
-      db.dms = parsed.dms || {};
-      db.groups = parsed.groups || {};
-      db.groupInvites = parsed.groupInvites || {};
-    }
-    console.log("[db] loaded", DISK_FILE);
-  } catch (e) {
-    console.log("[db] load failed", e?.message || e);
-  }
-}
-async function saveToDisk() {
-  try {
-    const dir = path.dirname(DISK_FILE);
-    if (!fs.existsSync(dir)) return; // no disk mounted
-    const payload = {
-      users: db.users,
-      tokens: db.tokens,
-      global: db.global,
-      dms: db.dms,
-      groups: db.groups,
-      groupInvites: db.groupInvites
-    };
-    await fs.promises.writeFile(DISK_FILE, safeJson(payload), "utf8");
-  } catch {
-    // ignore
-  }
-}
-
-await loadFromDisk();
-
-/**
- * -------------------------
- * “Real” users chatter (bots) — server-side so all devices see same messages.
- * These accounts exist in db.users but cannot be logged into (login denied).
- * They also go online/offline occasionally.
- * -------------------------
- */
-const SIM_USERS = [
-  "oregon6767","theowner","zippyfn","mikachu","voidd","lilsam","xavier09",
-  "idkbro","noxity","bruhmoment","sarahxoxo","jaylen","ghosted","vex",
-  "kiraalt","honeybee","rariii","dylanw","senpaiish","baddieq","koji"
+const BOT_LINES = [
+  "wsg chat",
+  "nah this actually clean",
+  "why is my wifi tweaking rn",
+  "bro who made this",
+  "ok lowkey nice",
+  "anyone here fr?",
+  "bruh moment",
+  "yo this site got potential",
+  "ngl this is smooth",
+  "tf is this",
+  "i gotta go wash dishes rq",
+  "brb i’ll be back",
+  "gtg",
+  "hold on my phone dying",
+  "wait how do i add ppl",
+  "someone dm me",
+  "this cursor is crazy",
+  "yo @Guest3406 just press login",
+  "why is everyone so quiet",
+  "this feels like early discord vibes"
 ];
 
-// Deny login for these names (you asked: "you cant log into them")
-const SIM_SET = new Set(SIM_USERS);
-
-const SIM_LINES = [
-  "wsg chat", "tf is this", "lowkey clean", "bruh my wifi tweaking",
-  "anyone here?", "this kinda fire ngl", "why does it feel like discord lite",
-  "yo who made this", "im dead 💀", "nahh", "this cursor wild",
-  "bro why is global so active", "idk i like it", "ok this is smooth",
-  "how do i make an acc", "yo @%GUEST% u just click login",
-  "brb", "gtg", "gotta go wash dishes rq", "ima go eat rq", "back soon",
-  "this better not lag later", "im on mobile rn"
+const BOT_LEAVE_LINES = [
+  "gtg",
+  "brb",
+  "gotta go eat rq",
+  "i’ll be back",
+  "gotta do something rq",
+  "ok i’m out",
+  "later chat",
+  "i gotta hop off"
 ];
 
-const SIM_GUESTS = () => {
-  const n = (Math.random() < 0.5)
-    ? String(Math.floor(1000 + Math.random() * 9000))
-    : String(Math.floor(10000 + Math.random() * 90000));
-  return `Guest${n}`;
-};
-
-function ensureSimAccount(name) {
+function ensureBotUser(name) {
   if (!db.users[name]) {
     db.users[name] = {
       username: name,
-      pass: null,
-      createdAt: now() - Math.floor(Math.random() * 1000 * 60 * 60 * 24 * 365), // within ~1yr
+      pass: null, // cannot login
+      createdAt: now() - Math.floor(Math.random() * 1000 * 60 * 60 * 24 * 180),
       guest: false,
-      status: "online",
       bio: "",
-      settings: defaultSettings(),
+      status: "online",
+      settings: { density: 0.18, sidebar: 0.24, cursorMode: "off", sounds: false, reduceAnimations: true },
       social: { friends: [], incoming: [], outgoing: [], blocked: [] },
-      stats: { messages: 0 },
-      xp: { level: Math.floor(1 + Math.random() * 12), xp: 0, next: xpNext(1) },
-      mutes: { global: false, dms: [], groups: [] }
+      stats: { messages: Math.floor(Math.random() * 200) },
+      xp: { level: Math.floor(Math.random() * 15) + 1, xp: 0, next: 120 },
+      notifications: { mentions: 0 }
     };
   }
+  statusByUser.set(name, "online");
 }
 
-function simGoOnline(name) {
-  ensureSimAccount(name);
-  db.users[name].status = "online";
-  online.add(name);
-  emitOnline();
-}
-function simGoOffline(name) {
-  if (db.users[name]) db.users[name].status = "invisible";
-  online.delete(name);
+function botJoinAll() {
+  for (const name of BOT_NAMES.slice(0, 12)) {
+    ensureBotUser(name);
+    online.add(name);
+  }
   emitOnline();
 }
 
-function simSendGlobalLine() {
-  // pick online sim user or bring one online
-  let activeSim = SIM_USERS.filter(u => online.has(u));
-  if (activeSim.length < 5) {
-    // bring a few online
-    const pick = SIM_USERS[Math.floor(Math.random() * SIM_USERS.length)];
-    simGoOnline(pick);
-    activeSim = SIM_USERS.filter(u => online.has(u));
-  }
-  const user = activeSim[Math.floor(Math.random() * activeSim.length)];
+function botRandomTalk() {
+  // pick an “online” bot
+  const candidates = BOT_NAMES.filter(n => statusByUser.get(n) && statusByUser.get(n) !== "invisible");
+  if (!candidates.length) return;
 
-  let text = SIM_LINES[Math.floor(Math.random() * SIM_LINES.length)];
-  if (text.includes("%GUEST%")) {
-    const g = SIM_GUESTS();
-    text = text.replace("%GUEST%", g);
-  }
+  const name = candidates[Math.floor(Math.random() * candidates.length)];
+  const text = BOT_LINES[Math.floor(Math.random() * BOT_LINES.length)];
 
-  const msg = { user, text, ts: now() };
+  const msg = { user: name, text, ts: now() };
   db.global.push(msg);
   if (db.global.length > 350) db.global.shift();
   io.emit("globalMessage", msg);
+
+  // bots gain tiny XP too (for leaderboard realism)
+  const u = db.users[name];
+  if (u) {
+    u.stats.messages = (u.stats.messages || 0) + 1;
+    addXP(u, 2);
+  }
+  scheduleSave();
 }
 
-function simPresenceTick() {
-  // randomly send someone offline
-  if (Math.random() < 0.28) {
-    const onlineSims = SIM_USERS.filter(u => online.has(u));
-    if (onlineSims.length > 6) {
-      const who = onlineSims[Math.floor(Math.random() * onlineSims.length)];
-      simGoOffline(who);
+function botRandomPresence() {
+  // occasionally a bot “leaves” (becomes invisible), then returns
+  const name = BOT_NAMES[Math.floor(Math.random() * BOT_NAMES.length)];
+  if (!db.users[name]) ensureBotUser(name);
+
+  const st = statusByUser.get(name) || "online";
+  const flip = Math.random();
+
+  if (flip < 0.45 && st !== "invisible") {
+    // leave
+    statusByUser.set(name, "invisible");
+    online.delete(name);
+
+    // optional leaving line (not every time)
+    if (Math.random() < 0.35) {
+      const leaveText = BOT_LEAVE_LINES[Math.floor(Math.random() * BOT_LEAVE_LINES.length)];
+      const msg = { user: name, text: leaveText, ts: now() };
+      db.global.push(msg);
+      if (db.global.length > 350) db.global.shift();
+      io.emit("globalMessage", msg);
     }
+  } else if (flip > 0.55 && st === "invisible") {
+    // come back
+    statusByUser.set(name, "online");
+    online.add(name);
   }
-  // randomly bring someone online
-  if (Math.random() < 0.45) {
-    const who = SIM_USERS[Math.floor(Math.random() * SIM_USERS.length)];
-    simGoOnline(who);
-  }
+  emitOnline();
+  scheduleSave();
 }
 
+function botOccasionalGuest() {
+  if (Math.random() < 0.45) return;
+  const digits = (Math.random() < 0.5)
+    ? String(Math.floor(1000 + Math.random() * 9000))
+    : String(Math.floor(10000 + Math.random() * 90000));
+  const g = `Guest${digits}`;
+
+  // guest says something simple
+  const guestLines = ["how do i", "anyone got tips", "wsg", "yo", "why is this kinda cool"];
+  const msg = { user: g, text: guestLines[Math.floor(Math.random() * guestLines.length)], ts: now() };
+  db.global.push(msg);
+  if (db.global.length > 350) db.global.shift();
+  io.emit("globalMessage", msg);
+
+  // a bot replies with @mention sometimes
+  if (Math.random() < 0.6) {
+    const bot = BOT_NAMES[Math.floor(Math.random() * BOT_NAMES.length)];
+    if (!db.users[bot]) ensureBotUser(bot);
+    const reply = `@${g} just click login top left`;
+    const msg2 = { user: bot, text: reply, ts: now() };
+    db.global.push(msg2);
+    if (db.global.length > 350) db.global.shift();
+    io.emit("globalMessage", msg2);
+  }
+
+  scheduleSave();
+}
+
+// Start bot system
 setTimeout(() => {
-  // seed presence + start chatting
-  for (let i = 0; i < 9; i++) simGoOnline(SIM_USERS[i]);
-  emitOnline();
-  setInterval(simPresenceTick, 15000);
-  setInterval(simSendGlobalLine, 9000);
-}, 2500);
+  botJoinAll();
+  // talk loop
+  setInterval(botRandomTalk, 9000 + Math.floor(Math.random() * 7000));
+  // presence loop
+  setInterval(botRandomPresence, 14000 + Math.floor(Math.random() * 10000));
+  // guest loop
+  setInterval(botOccasionalGuest, 17000 + Math.floor(Math.random() * 12000));
+}, 1500);
 
-// ---------------- Socket events ----------------
+/* -------------------------
+   Socket events
+------------------------- */
 io.on("connection", (socket) => {
-  function currentUser() { return socketToUser.get(socket.id) || null; }
-
+  function currentUser() {
+    return socketToUser.get(socket.id) || null;
+  }
+  function isGuestUserName(name) {
+    return /^Guest\d{4,5}$/.test(String(name));
+  }
   function requireAuth() {
     const u = currentUser();
     if (!u) return null;
-    if (isGuestName(u)) return null;
+    if (isGuestUserName(u)) return null;
     return u;
   }
 
-  function setOnlineForUser(u) {
-    if (!u) return;
-    online.add(u);
-    const count = (onlineHumanSockets.get(u) || 0) + 1;
-    onlineHumanSockets.set(u, count);
-  }
-
-  function clearOnlineForUser(u) {
-    if (!u) return;
-    const count = (onlineHumanSockets.get(u) || 0) - 1;
-    if (count <= 0) {
-      onlineHumanSockets.delete(u);
-      if (!SIM_SET.has(u)) online.delete(u);
-    } else {
-      onlineHumanSockets.set(u, count);
-    }
-  }
-
+  // resume
   socket.on("resume", ({ token } = {}) => {
     const t = String(token || "");
     const username = db.tokens[t];
@@ -401,30 +459,31 @@ io.on("connection", (socket) => {
     socketToUser.set(socket.id, username);
     socket.join(username);
 
-    setOnlineForUser(username);
+    const userRec = db.users[username];
+
+    // status
+    const st = userRec.status || "online";
+    statusByUser.set(username, st);
+    if (st !== "invisible") online.add(username);
     emitOnline();
 
-    const userRec = db.users[username];
     socket.emit("loginSuccess", {
       username,
       guest: false,
       token: t,
-      settings: userRec.settings || defaultSettings(),
+      settings: userRec.settings,
       social: userRec.social,
       xp: userRec.xp,
-      status: userRec.status || "online",
-      bio: userRec.bio || ""
+      bio: userRec.bio || "",
+      status: st
     });
-
-    socket.emit("settings", userRec.settings || defaultSettings());
-    socket.emit("xp:update", userRec.xp);
-    socket.emit("status:update", { user: username, status: userRec.status || "online" });
 
     emitSocial(username);
     emitGroupsList(username);
-    socket.emit("global:cooldown", { ms: 3000 });
+    socket.emit("global:init", { last: db.global.slice(-220) });
   });
 
+  // login
   socket.on("login", ({ username, password, guest } = {}) => {
     if (guest) {
       const digits = (Math.random() < 0.5)
@@ -433,26 +492,30 @@ io.on("connection", (socket) => {
       const g = `Guest${digits}`;
 
       socketToUser.set(socket.id, g);
-      socket.join(g);
-
-      // Guests are online
-      online.add(g);
-      emitOnline();
 
       socket.emit("loginSuccess", {
         username: g,
         guest: true,
         token: null,
-        settings: defaultSettings(),
+        settings: {
+          density: 0.18,
+          sidebar: 0.24,
+          cursorMode: "trail",
+          sounds: true,
+          reduceAnimations: false
+        },
         social: { friends: [], incoming: [], outgoing: [], blocked: [] },
         xp: null,
-        status: "online",
-        bio: ""
+        bio: "",
+        status: "online"
       });
 
-      socket.emit("settings", defaultSettings());
-      socket.emit("status:update", { user: g, status: "online" });
-      socket.emit("global:cooldown", { ms: 5000 });
+      // guests are visible in online list as “online”
+      statusByUser.set(g, "online");
+      online.add(g);
+      emitOnline();
+
+      socket.emit("global:init", { last: db.global.slice(-220) });
       return;
     }
 
@@ -460,11 +523,11 @@ io.on("connection", (socket) => {
     const p = String(password || "");
 
     if (!usernameValid(u) || badUsername(u)) {
-      socket.emit("loginError", "Username not allowed. Use letters/numbers/_/. only (3-20). No spaces.");
+      socket.emit("loginError", "Username not allowed. Use letters/numbers/_/. only (3-20).");
       return;
     }
-    if (SIM_SET.has(u)) {
-      socket.emit("loginError", "That username is not available.");
+    if (isReservedName(u)) {
+      socket.emit("loginError", "That username is reserved.");
       return;
     }
     if (!p || p.length < 4) {
@@ -477,7 +540,7 @@ io.on("connection", (socket) => {
       ensureUser(u, p);
       scheduleSave();
     } else {
-      if (!checkPass(p, existing.pass)) {
+      if (!existing.pass || !checkPass(p, existing.pass)) {
         socket.emit("loginError", "Wrong password.");
         return;
       }
@@ -489,45 +552,29 @@ io.on("connection", (socket) => {
     socketToUser.set(socket.id, u);
     socket.join(u);
 
-    setOnlineForUser(u);
-    // default visible status if invisible
-    if (db.users[u].status === "invisible") db.users[u].status = "online";
+    const userRec = db.users[u];
+    const st = userRec.status || "online";
+    statusByUser.set(u, st);
+    if (st !== "invisible") online.add(u);
+
     emitOnline();
 
-    const userRec = db.users[u];
     socket.emit("loginSuccess", {
       username: u,
       guest: false,
       token,
-      settings: userRec.settings || defaultSettings(),
+      settings: userRec.settings,
       social: userRec.social,
       xp: userRec.xp,
-      status: userRec.status || "online",
-      bio: userRec.bio || ""
+      bio: userRec.bio || "",
+      status: st
     });
-
-    socket.emit("settings", userRec.settings || defaultSettings());
-    socket.emit("xp:update", userRec.xp);
-    socket.emit("status:update", { user: u, status: userRec.status || "online" });
 
     emitSocial(u);
     emitGroupsList(u);
-    socket.emit("global:cooldown", { ms: 3000 });
+    socket.emit("global:init", { last: db.global.slice(-220) });
+
     scheduleSave();
-  });
-
-  socket.on("logout", () => {
-    const u = currentUser();
-    if (!u) return;
-    socketToUser.delete(socket.id);
-
-    if (isGuestName(u)) {
-      online.delete(u);
-    } else {
-      clearOnlineForUser(u);
-    }
-    emitOnline();
-    socket.emit("loggedOut");
   });
 
   socket.on("disconnect", () => {
@@ -535,66 +582,87 @@ io.on("connection", (socket) => {
     socketToUser.delete(socket.id);
 
     if (u) {
-      if (isGuestName(u)) online.delete(u);
-      else clearOnlineForUser(u);
+      // If user fully disconnected, remove from online list unless they have other sockets.
+      // Simplified: mark offline for guests; for accounts, keep status but remove from online.
+      online.delete(u);
       emitOnline();
     }
   });
 
-  // Settings update
+  /* -------------------------
+     Status
+  ------------------------- */
+  socket.on("status:set", ({ status } = {}) => {
+    const u = currentUser();
+    if (!u) return;
+
+    const allowed = new Set(["online", "idle", "dnd", "invisible"]);
+    const st = allowed.has(status) ? status : "online";
+
+    statusByUser.set(u, st);
+
+    // persist only for real accounts
+    if (!isGuestUserName(u) && db.users[u]) {
+      db.users[u].status = st;
+      scheduleSave();
+    }
+
+    if (st === "invisible") online.delete(u);
+    else online.add(u);
+
+    emitOnline();
+
+    // for user only
+    socket.emit("status:update", { status: st });
+  });
+
+  /* -------------------------
+     Settings
+  ------------------------- */
   socket.on("settings:update", (settings) => {
     const username = requireAuth();
     if (!username) return;
-
     const u = db.users[username];
     if (!u) return;
 
     const s = settings || {};
+    const cursorAllowed = new Set(["off", "dot", "trail"]);
+
     u.settings = {
-      density: Number.isFinite(s.density) ? Math.max(0.05, Math.min(0.45, s.density)) : (u.settings?.density ?? 0.15),
-      sidebar: Number.isFinite(s.sidebar) ? Math.max(0.18, Math.min(0.32, s.sidebar)) : (u.settings?.sidebar ?? 0.24),
-      cursorMode: ["off", "normal", "trail"].includes(s.cursorMode) ? s.cursorMode : (u.settings?.cursorMode ?? "trail"),
-      reduceAnimations: !!s.reduceAnimations,
-      unblurBlocked: !!s.unblurBlocked,
-      sounds: s.sounds !== false
+      density: Number.isFinite(s.density) ? Math.max(0.12, Math.min(0.28, s.density)) : 0.18,
+      sidebar: Number.isFinite(s.sidebar) ? Math.max(0.20, Math.min(0.32, s.sidebar)) : 0.24,
+      cursorMode: cursorAllowed.has(s.cursorMode) ? s.cursorMode : (u.settings.cursorMode || "trail"),
+      sounds: s.sounds !== false,
+      reduceAnimations: !!s.reduceAnimations
     };
 
     socket.emit("settings", u.settings);
     scheduleSave();
   });
 
-  // Status updates
-  socket.on("status:set", ({ status } = {}) => {
-    const username = currentUser();
+  /* -------------------------
+     Bio
+  ------------------------- */
+  socket.on("bio:update", ({ bio } = {}) => {
+    const username = requireAuth();
     if (!username) return;
+    const u = db.users[username];
+    if (!u) return;
 
-    // guests can change too (only local-ish effect; but broadcast status)
-    const allowed = ["online", "idle", "dnd", "invisible"];
-    const s = allowed.includes(String(status)) ? String(status) : "online";
-
-    if (!isGuestName(username) && db.users[username]) {
-      db.users[username].status = s;
-      scheduleSave();
-    }
-
-    // if invisible, remove from list
-    if (s === "invisible") {
-      if (!SIM_SET.has(username)) online.delete(username);
-    } else {
-      online.add(username);
-    }
-
-    io.emit("status:update", { user: username, status: s });
-    emitOnline();
+    u.bio = String(bio || "").slice(0, 200);
+    socket.emit("bio:update", { bio: u.bio });
+    scheduleSave();
   });
 
-  // Profile
+  /* -------------------------
+     Profile
+  ------------------------- */
   socket.on("profile:get", ({ user } = {}) => {
     const target = normalizeUser(user);
     if (!target) return;
 
-    if (isGuestName(target)) {
-      socket.emit("profile:data", { user: target, guest: true, status: "online" });
+    if (/^Guest\d{4,5}$/.test(target)) {
+      socket.emit("profile:data", { user: target, guest: true });
       return;
     }
 
@@ -606,37 +674,38 @@ io.on("connection", (socket) => {
     socket.emit("profile:data", p);
   });
 
-  socket.on("profile:setBio", ({ bio } = {}) => {
-    const username = requireAuth();
-    if (!username) return;
-    const u = db.users[username];
-    if (!u) return;
+  /* -------------------------
+     Leaderboard (XP)
+  ------------------------- */
+  socket.on("leaderboard:get", () => {
+    const all = Object.values(db.users)
+      .filter(u => u && !u.guest && u.pass) // real accounts only
+      .map(u => ({
+        user: u.username,
+        level: u.xp?.level ?? 1,
+        messages: u.stats?.messages ?? 0
+      }))
+      .sort((a, b) => (b.level - a.level) || (b.messages - a.messages) || a.user.localeCompare(b.user))
+      .slice(0, 25);
 
-    const b = String(bio || "").slice(0, 180);
-    u.bio = b;
-    socket.emit("profile:data", publicProfile(username));
-    scheduleSave();
+    socket.emit("leaderboard:data", all);
   });
 
-  // Inbox: friend requests + group invites only (mentions handled client-side)
-  socket.on("inbox:get", () => {
+  /* -------------------------
+     Social (friends + block)
+  ------------------------- */
+  socket.on("social:sync", () => {
     const username = requireAuth();
     if (!username) return;
-    const u = db.users[username];
-
-    socket.emit("inbox:data", {
-      friendRequests: u.social.incoming || [],
-      groupInvites: db.groupInvites[username] || []
-    });
+    emitSocial(username);
   });
 
-  // Friend requests
   socket.on("friend:request", ({ to } = {}) => {
     const username = requireAuth();
     if (!username) return;
 
     const target = normalizeUser(to);
-    if (!db.users[target]) {
+    if (!db.users[target] || !db.users[target].pass) {
       socket.emit("sendError", { reason: "User not found." });
       return;
     }
@@ -723,7 +792,6 @@ io.on("connection", (socket) => {
     scheduleSave();
   });
 
-  // Block / unblock
   socket.on("user:block", ({ user } = {}) => {
     const username = requireAuth();
     if (!username) return;
@@ -743,9 +811,11 @@ io.on("connection", (socket) => {
     me.social.outgoing = me.social.outgoing.filter(x => x !== target);
 
     const them = db.users[target];
-    them.social.friends = them.social.friends.filter(x => x !== username);
-    them.social.incoming = them.social.incoming.filter(x => x !== username);
-    them.social.outgoing = them.social.outgoing.filter(x => x !== username);
+    if (them?.social) {
+      them.social.friends = them.social.friends.filter(x => x !== username);
+      them.social.incoming = them.social.incoming.filter(x => x !== username);
+      them.social.outgoing = them.social.outgoing.filter(x => x !== username);
+    }
 
     emitSocial(username);
     emitSocial(target);
@@ -762,11 +832,37 @@ io.on("connection", (socket) => {
     scheduleSave();
   });
 
-  // Global history + send
-  socket.on("requestGlobalHistory", () => {
-    socket.emit("history", db.global.slice(-250));
+  /* -------------------------
+     Inbox
+     - mentions, group invites, friend requests only
+     - no “sections” on the client; client just renders a list
+  ------------------------- */
+  socket.on("inbox:get", () => {
+    const username = requireAuth();
+    if (!username) return;
+    const u = db.users[username];
+
+    socket.emit("inbox:data", {
+      friendRequests: u.social.incoming || [],
+      groupInvites: db.groupInvites[username] || [],
+      mentions: u.notifications?.mentions ?? 0
+    });
   });
 
+  socket.on("mentions:clear", () => {
+    const username = requireAuth();
+    if (!username) return;
+    const u = db.users[username];
+    u.notifications.mentions = 0;
+    emitSocial(username);
+    scheduleSave();
+  });
+
+  /* -------------------------
+     Global chat history + send
+     - server does not enforce cooldown (client does),
+       but you can add server-side if needed.
+  ------------------------- */
   socket.on("sendGlobal", ({ text, ts } = {}) => {
     const sender = currentUser();
     if (!sender) return;
@@ -778,29 +874,47 @@ io.on("connection", (socket) => {
     db.global.push(msg);
     if (db.global.length > 350) db.global.shift();
 
+    // Mention detection for real accounts: @username
+    // (Guests do not get inbox mentions)
+    for (const [uname, rec] of Object.entries(db.users)) {
+      if (!rec || rec.guest) continue;
+      if (!rec.pass) continue;
+      const rx = new RegExp(`@${uname}\\b`, "i");
+      if (rx.test(safeText)) {
+        rec.notifications = rec.notifications || { mentions: 0 };
+        rec.notifications.mentions = Math.min(99, (rec.notifications.mentions || 0) + 1);
+        emitSocial(uname);
+      }
+    }
+
     io.emit("globalMessage", msg);
 
-    if (!isGuestName(sender) && db.users[sender]) {
-      db.users[sender].stats.messages += 1;
-      const { leveledUp } = addXP(db.users[sender], 8);
-      io.to(sender).emit("xp:update", { ...db.users[sender].xp, leveledUp });
+    // XP for real accounts only
+    if (!/^Guest/.test(sender) && db.users[sender] && db.users[sender].pass) {
+      db.users[sender].stats.messages = (db.users[sender].stats.messages || 0) + 1;
+      addXP(db.users[sender], 7);
+      io.to(sender).emit("xp:update", db.users[sender].xp);
       scheduleSave();
     }
   });
 
-  // DM history + send
+  /* -------------------------
+     DM history + send
+     - respects blocking
+     - if you “unadd” someone, client hides DM list but server keeps history
+  ------------------------- */
   socket.on("dm:history", ({ withUser } = {}) => {
     const username = requireAuth();
     if (!username) return;
 
     const other = normalizeUser(withUser);
-    if (!db.users[other]) {
+    if (!db.users[other] || !db.users[other].pass) {
       socket.emit("dm:history", { withUser: other, msgs: [] });
       return;
     }
 
     const key = dmKey(username, other);
-    const msgs = (db.dms[key] || []).slice(-200);
+    const msgs = (db.dms[key] || []).slice(-220);
     socket.emit("dm:history", { withUser: other, msgs });
   });
 
@@ -809,7 +923,7 @@ io.on("connection", (socket) => {
     if (!username) return;
 
     const target = normalizeUser(to);
-    if (!db.users[target]) {
+    if (!db.users[target] || !db.users[target].pass) {
       socket.emit("sendError", { reason: "User not found." });
       return;
     }
@@ -830,19 +944,21 @@ io.on("connection", (socket) => {
     const key = dmKey(username, target);
     const list = getOrCreateDM(key);
     list.push(msg);
-    if (list.length > 250) list.shift();
+    if (list.length > 300) list.shift();
 
     io.to(username).emit("dm:message", { from: target, msg });
     io.to(target).emit("dm:message", { from: username, msg });
 
-    me.stats.messages += 1;
-    const { leveledUp } = addXP(me, 10);
-    io.to(username).emit("xp:update", { ...me.xp, leveledUp });
+    me.stats.messages = (me.stats.messages || 0) + 1;
+    addXP(me, 10);
+    io.to(username).emit("xp:update", me.xp);
 
     scheduleSave();
   });
 
-  // Groups
+  /* -------------------------
+     Groups: invites required to “activate”
+  ------------------------- */
   socket.on("groups:list", () => {
     const username = requireAuth();
     if (!username) return;
@@ -855,7 +971,7 @@ io.on("connection", (socket) => {
 
     const list = Array.isArray(invites) ? invites.map(normalizeUser) : [];
     const uniqueInvites = Array.from(new Set(list))
-      .filter(u => u && u !== username && db.users[u]);
+      .filter(u => u && u !== username && db.users[u] && db.users[u].pass);
 
     if (uniqueInvites.length < 1) {
       socket.emit("sendError", { reason: "Invite at least 1 person to create a group." });
@@ -878,7 +994,7 @@ io.on("connection", (socket) => {
     for (const u of uniqueInvites) {
       if (!db.groupInvites[u]) db.groupInvites[u] = [];
       db.groupInvites[u].unshift({ id: gid, from: username, name: gname, ts: now() });
-      db.groupInvites[u] = db.groupInvites[u].slice(0, 50);
+      db.groupInvites[u] = db.groupInvites[u].slice(0, 60);
       emitSocial(u);
     }
 
@@ -895,9 +1011,10 @@ io.on("connection", (socket) => {
     if (!g) return;
 
     db.groupInvites[username] = (db.groupInvites[username] || []).filter(x => x.id !== gid);
-
     if (!g.members.includes(username)) g.members.push(username);
+
     if (!g.active) g.active = true;
+
     g.pendingInvites = (g.pendingInvites || []).filter(x => x !== username);
 
     for (const member of g.members) {
@@ -919,8 +1036,8 @@ io.on("connection", (socket) => {
     const gid = String(id || "");
     const g = db.groups[gid];
     if (g?.pendingInvites) g.pendingInvites = g.pendingInvites.filter(x => x !== username);
-    db.groupInvites[username] = (db.groupInvites[username] || []).filter(x => x.id !== gid);
 
+    db.groupInvites[username] = (db.groupInvites[username] || []).filter(x => x.id !== gid);
     emitSocial(username);
     scheduleSave();
   });
@@ -939,7 +1056,7 @@ io.on("connection", (socket) => {
     socket.emit("group:history", {
       groupId: gid,
       meta: { id: gid, name: g.name, owner: g.owner, members: g.members },
-      msgs: g.msgs.slice(-250)
+      msgs: g.msgs.slice(-260)
     });
   });
 
@@ -959,15 +1076,61 @@ io.on("connection", (socket) => {
 
     const msg = { user: username, text: safeText, ts: now() };
     g.msgs.push(msg);
-    if (g.msgs.length > 350) g.msgs.shift();
+    if (g.msgs.length > 380) g.msgs.shift();
 
-    for (const member of g.members) io.to(member).emit("group:message", { groupId: gid, msg });
+    for (const member of g.members) {
+      io.to(member).emit("group:message", { groupId: gid, msg });
+    }
 
     const me = db.users[username];
-    me.stats.messages += 1;
-    const { leveledUp } = addXP(me, 9);
-    io.to(username).emit("xp:update", { ...me.xp, leveledUp });
+    me.stats.messages = (me.stats.messages || 0) + 1;
+    addXP(me, 9);
+    io.to(username).emit("xp:update", me.xp);
 
+    scheduleSave();
+  });
+
+  socket.on("group:rename", ({ groupId, name } = {}) => {
+    const username = requireAuth();
+    if (!username) return;
+
+    const gid = String(groupId || "");
+    const g = db.groups[gid];
+    if (!g || !g.active || g.owner !== username) {
+      socket.emit("sendError", { reason: "Only owner can rename." });
+      return;
+    }
+
+    g.name = String(name || "").trim().slice(0, 40) || "Unnamed Group";
+
+    for (const m of g.members) {
+      io.to(m).emit("group:meta", { groupId: gid, meta: { id: gid, name: g.name, owner: g.owner, members: g.members } });
+      emitGroupsList(m);
+    }
+    scheduleSave();
+  });
+
+  socket.on("group:transferOwner", ({ groupId, newOwner } = {}) => {
+    const username = requireAuth();
+    if (!username) return;
+
+    const gid = String(groupId || "");
+    const target = normalizeUser(newOwner);
+    const g = db.groups[gid];
+
+    if (!g || !g.active || g.owner !== username) {
+      socket.emit("sendError", { reason: "Only owner can transfer." });
+      return;
+    }
+    if (!g.members.includes(target)) {
+      socket.emit("sendError", { reason: "New owner must be a member." });
+      return;
+    }
+
+    g.owner = target;
+    for (const m of g.members) {
+      io.to(m).emit("group:meta", { groupId: gid, meta: { id: gid, name: g.name, owner: g.owner, members: g.members } });
+    }
     scheduleSave();
   });
 
@@ -983,17 +1146,17 @@ io.on("connection", (socket) => {
       socket.emit("sendError", { reason: "Only owner can add members." });
       return;
     }
-    if (!db.users[target]) {
+    if (!db.users[target] || !db.users[target].pass) {
       socket.emit("sendError", { reason: "User not found." });
       return;
     }
+
     if (!g.members.includes(target)) g.members.push(target);
 
     for (const m of g.members) {
       io.to(m).emit("group:meta", { groupId: gid, meta: { id: gid, name: g.name, owner: g.owner, members: g.members } });
       emitGroupsList(m);
     }
-
     scheduleSave();
   });
 
@@ -1034,6 +1197,7 @@ io.on("connection", (socket) => {
     if (!g || !g.active || !g.members.includes(username)) return;
 
     if (g.owner === username) {
+      // owner leaving deletes
       const members = [...g.members];
       delete db.groups[gid];
       for (const m of members) {
@@ -1073,60 +1237,6 @@ io.on("connection", (socket) => {
       emitGroupsList(m);
     }
     scheduleSave();
-  });
-
-  socket.on("group:transferOwner", ({ groupId, newOwner } = {}) => {
-    const username = requireAuth();
-    if (!username) return;
-
-    const gid = String(groupId || "");
-    const target = normalizeUser(newOwner);
-    const g = db.groups[gid];
-
-    if (!g || !g.active || g.owner !== username) {
-      socket.emit("sendError", { reason: "Only owner can transfer." });
-      return;
-    }
-    if (!g.members.includes(target)) {
-      socket.emit("sendError", { reason: "New owner must be a member." });
-      return;
-    }
-
-    g.owner = target;
-    for (const m of g.members) io.to(m).emit("group:meta", { groupId: gid, meta: { id: gid, name: g.name, owner: g.owner, members: g.members } });
-    scheduleSave();
-  });
-
-  socket.on("group:rename", ({ groupId, name } = {}) => {
-    const username = requireAuth();
-    if (!username) return;
-
-    const gid = String(groupId || "");
-    const g = db.groups[gid];
-    if (!g || !g.active || g.owner !== username) {
-      socket.emit("sendError", { reason: "Only owner can rename." });
-      return;
-    }
-
-    const n = String(name || "").trim().slice(0, 40) || "Unnamed Group";
-    g.name = n;
-
-    for (const m of g.members) {
-      io.to(m).emit("group:meta", { groupId: gid, meta: { id: gid, name: g.name, owner: g.owner, members: g.members } });
-      emitGroupsList(m);
-    }
-    scheduleSave();
-  });
-
-  // Leaderboard
-  socket.on("leaderboard:get", () => {
-    const rows = Object.values(db.users)
-      .filter(u => u && !u.guest && !SIM_SET.has(u.username))
-      .map(u => ({ user: u.username, level: u.xp?.level ?? 1, messages: u.stats?.messages ?? 0 }))
-      .sort((a, b) => (b.level - a.level) || (b.messages - a.messages))
-      .slice(0, 20);
-
-    socket.emit("leaderboard:data", rows);
   });
 });
 
