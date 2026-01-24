@@ -7,223 +7,339 @@
 
   <style>
     :root{
-      --bg:#0b0d10;
-      --panel:rgba(255,255,255,.03);
+      --bg:#07080a;
+      --bg2:#0a0c0f;
+      --panel:rgba(255,255,255,.035);
       --panel2:rgba(255,255,255,.02);
-      --stroke:#1c232c;
-      --stroke2:#273140;
-      --text:#e8edf3;
-      --muted:#9aa7b3;
+      --stroke:rgba(255,255,255,.08);
+      --stroke2:rgba(255,255,255,.11);
+      --text:#e9eff6;
+      --muted:#98a6b6;
 
-      --danger:#ff5252;
+      --danger:#ff4b4b;
 
-      /* Status colors */
-      --online:#48d18c;
+      --online:#43d18b;
       --idle:#ffd166;
       --dnd:#ff5252;
-      --offline:#64748b;
+      --offline:#6b7a90;
 
-      --shadow: 0 12px 40px rgba(0,0,0,.45);
-      --radius:16px;
+      --radius:14px;
+      --shadow: 0 18px 60px rgba(0,0,0,.55);
+      --shadow2: 0 12px 40px rgba(0,0,0,.45);
+
+      --ease: cubic-bezier(.2,.8,.2,1);
+      --fast: 140ms var(--ease);
+      --med: 220ms var(--ease);
+      --slow: 420ms var(--ease);
+
+      --h: 36px; /* control height */
+      --gap: 10px;
     }
 
     *{ box-sizing:border-box; }
     html,body{ height:100%; }
     body{
       margin:0;
-      background:var(--bg);
+      background: radial-gradient(900px 900px at 20% 10%, rgba(255,255,255,.06), transparent 60%),
+                  radial-gradient(1000px 900px at 88% 70%, rgba(255,255,255,.05), transparent 60%),
+                  linear-gradient(180deg, var(--bg), var(--bg2));
       color:var(--text);
-      font: 500 13px/1.3 ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+      font: 520 12.5px/1.35 ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
       overflow:hidden;
-      cursor: none; /* custom cursor default; can be turned off in settings */
     }
 
-    /* Star background */
+    /* ===== DOTTED STAR BACKGROUND (with motion) ===== */
     .bg{
       position:fixed; inset:0;
-      background: radial-gradient(1000px 800px at 20% 15%, rgba(255,255,255,.06), transparent 55%),
-                  radial-gradient(900px 900px at 85% 65%, rgba(255,255,255,.04), transparent 60%);
-      overflow:hidden;
       pointer-events:none;
+      overflow:hidden;
+      filter: contrast(1.05) saturate(1.05);
     }
-    .stars, .stars2, .stars3{
-      position:absolute; inset:-200px;
+    .starLayer{
+      position:absolute; inset:-240px;
       background-repeat:repeat;
-      background-size: 260px 260px;
       opacity:.7;
-      animation: drift 90s linear infinite;
+      animation: driftA 110s linear infinite;
+      transform: translate3d(0,0,0);
+      will-change: transform;
     }
-    .stars{
+    .starLayer.l1{
+      background-size: 280px 280px;
+      opacity:.70;
       background-image:
-        radial-gradient(1px 1px at 40px 60px, rgba(255,255,255,.6), transparent 40%),
-        radial-gradient(1px 1px at 90px 120px, rgba(255,255,255,.7), transparent 40%),
-        radial-gradient(1px 1px at 170px 40px, rgba(255,255,255,.5), transparent 40%),
-        radial-gradient(1px 1px at 220px 190px, rgba(255,255,255,.6), transparent 40%);
+        radial-gradient(1px 1px at 12px 18px, rgba(255,255,255,.60), transparent 45%),
+        radial-gradient(1px 1px at 54px 120px, rgba(255,255,255,.70), transparent 45%),
+        radial-gradient(1px 1px at 98px 52px, rgba(255,255,255,.55), transparent 45%),
+        radial-gradient(1px 1px at 160px 210px, rgba(255,255,255,.62), transparent 45%),
+        radial-gradient(1px 1px at 220px 160px, rgba(255,255,255,.58), transparent 45%),
+        radial-gradient(1px 1px at 250px 30px, rgba(255,255,255,.68), transparent 45%);
     }
-    .stars2{
-      background-size: 340px 340px;
+    .starLayer.l2{
+      background-size: 380px 380px;
       opacity:.45;
-      animation-duration: 140s;
+      animation: driftB 165s linear infinite;
       background-image:
-        radial-gradient(1px 1px at 70px 90px, rgba(255,255,255,.6), transparent 40%),
-        radial-gradient(1px 1px at 140px 220px, rgba(255,255,255,.5), transparent 40%),
-        radial-gradient(1px 1px at 260px 110px, rgba(255,255,255,.7), transparent 40%);
+        radial-gradient(1px 1px at 26px 40px, rgba(255,255,255,.62), transparent 45%),
+        radial-gradient(1px 1px at 120px 210px, rgba(255,255,255,.55), transparent 45%),
+        radial-gradient(1px 1px at 240px 90px, rgba(255,255,255,.70), transparent 45%),
+        radial-gradient(1px 1px at 320px 310px, rgba(255,255,255,.58), transparent 45%);
     }
-    .stars3{
-      background-size: 520px 520px;
+    .starLayer.l3{
+      background-size: 560px 560px;
       opacity:.25;
-      animation-duration: 200s;
+      animation: driftC 220s linear infinite;
       background-image:
-        radial-gradient(1px 1px at 160px 170px, rgba(255,255,255,.6), transparent 40%),
-        radial-gradient(1px 1px at 340px 260px, rgba(255,255,255,.5), transparent 40%),
-        radial-gradient(1px 1px at 420px 80px, rgba(255,255,255,.65), transparent 40%);
+        radial-gradient(1px 1px at 180px 150px, rgba(255,255,255,.62), transparent 45%),
+        radial-gradient(1px 1px at 360px 260px, rgba(255,255,255,.56), transparent 45%),
+        radial-gradient(1px 1px at 420px 80px, rgba(255,255,255,.70), transparent 45%);
     }
-    @keyframes drift {
-      from{ transform: translate3d(0,0,0); }
-      to{ transform: translate3d(-260px, -260px, 0); }
+    @keyframes driftA { from{ transform:translate3d(0,0,0);} to{ transform:translate3d(-280px,-280px,0);} }
+    @keyframes driftB { from{ transform:translate3d(0,0,0);} to{ transform:translate3d(-380px,-380px,0);} }
+    @keyframes driftC { from{ transform:translate3d(0,0,0);} to{ transform:translate3d(-560px,-560px,0);} }
+
+    /* subtle twinkle overlay */
+    .twinkle{
+      position:absolute; inset:0;
+      background: radial-gradient(700px 700px at 65% 35%, rgba(255,255,255,.06), transparent 55%),
+                  radial-gradient(800px 800px at 35% 75%, rgba(255,255,255,.05), transparent 60%);
+      opacity:.55;
+      animation: twinkle 8s ease-in-out infinite;
+      mix-blend-mode: screen;
+    }
+    @keyframes twinkle{
+      0%,100%{ opacity:.42; filter: blur(0px); }
+      50%{ opacity:.60; filter: blur(.3px); }
     }
 
-    /* Centered shell */
+    /* ===== SHELL / APP CARD ===== */
     .shell{
       position:fixed; inset:0;
       display:flex;
       align-items:center;
       justify-content:center;
-      padding: 28px;
+      padding: 22px;
     }
     .card{
       width:min(980px, 100%);
       height:min(720px, 100%);
       border:1px solid var(--stroke);
-      border-radius: 20px;
-      background: rgba(10,12,14,.78);
-      backdrop-filter: blur(10px);
+      border-radius: 18px;
+      background: rgba(8,10,13,.78);
+      backdrop-filter: blur(12px);
       box-shadow: var(--shadow);
       display:flex;
       overflow:hidden;
-      transform: translateZ(0);
       position:relative;
+      transform: translateZ(0);
+      will-change: transform, filter;
+      animation: cardIn 520ms var(--ease) both;
+    }
+    @keyframes cardIn{
+      from{ opacity:0; transform: translateY(10px) scale(.985); filter: blur(2px); }
+      to{ opacity:1; transform: translateY(0) scale(1); filter: blur(0); }
     }
 
-    /* Login overlay */
-    .overlay{
-      position:absolute; inset:0;
-      display:flex;
-      align-items:center;
-      justify-content:center;
-      background: rgba(0,0,0,.55);
-      backdrop-filter: blur(6px);
-      z-index: 50;
-      opacity:1;
-      transition: opacity .25s ease;
-    }
-    .overlay.hidden{ pointer-events:none; opacity:0; }
-    .loginCard{
-      width:min(420px, 92vw);
-      border:1px solid var(--stroke);
-      border-radius: 18px;
-      background: rgba(12,14,17,.88);
-      box-shadow: var(--shadow);
-      padding: 18px;
-      display:flex;
-      flex-direction:column;
-      gap:12px;
-      transform: scale(1);
-      transition: transform .18s ease, box-shadow .18s ease;
-    }
-    .loginCard:hover{
-      transform: scale(1.01);
-      box-shadow: 0 16px 55px rgba(0,0,0,.52);
-    }
-    .brandRow{
-      display:flex; align-items:center; justify-content:space-between; gap:10px;
-    }
-    .brand{
-      font-weight:950;
-      letter-spacing:.2px;
-      font-size:16px;
-      white-space:nowrap;
-    }
-    .muted{ color:var(--muted); font-size:12px; }
-
-    .field{
-      width:100%;
-      padding: 10px 12px;
-      border-radius: 12px;
-      border:1px solid var(--stroke2);
-      background: rgba(255,255,255,.03);
-      color:var(--text);
-      outline:none;
-    }
-    .field:focus{ border-color: rgba(255,255,255,.18); }
-
+    /* ===== UNIVERSAL CONTROLS ===== */
     .btn{
-      border:1px solid var(--stroke2);
-      background: rgba(255,255,255,.03);
-      color:var(--text);
-      padding: 9px 12px;
+      height: var(--h);
+      padding: 0 12px;
       border-radius: 12px;
+      border:1px solid var(--stroke2);
+      background: rgba(255,255,255,.04);
+      color:var(--text);
       cursor:pointer;
       user-select:none;
       display:inline-flex;
       align-items:center;
       justify-content:center;
-      gap:8px;
-      white-space:nowrap;
+      gap:10px;
+      font-weight: 900;
+      letter-spacing:.2px;
+      transition: transform var(--fast), background var(--fast), border-color var(--fast), box-shadow var(--fast), filter var(--fast);
+      position:relative;
+      overflow:hidden;
+      -webkit-tap-highlight-color: transparent;
     }
-    .btn:hover{ background: rgba(255,255,255,.05); }
+    .btn:hover{
+      background: rgba(255,255,255,.06);
+      transform: translateY(-1px);
+      box-shadow: 0 10px 30px rgba(0,0,0,.35);
+    }
+    .btn:active{
+      transform: translateY(0) scale(.985);
+      filter: brightness(1.04);
+    }
     .btn.primary{
-      border-color: rgba(255,255,255,.22);
-      background: rgba(255,255,255,.08);
+      background: rgba(255,255,255,.10);
+      border-color: rgba(255,255,255,.16);
+    }
+    .btn.ghost{
+      background: transparent;
+      border-color: rgba(255,255,255,.10);
     }
     .btn.small{
-      padding: 7px 10px;
+      height: 30px;
+      padding: 0 10px;
       border-radius: 11px;
-      font-size:12px;
+      font-size: 12px;
+      font-weight: 900;
     }
-    .btnRow{
-      display:flex;
-      gap:10px;
-      flex-wrap:wrap;
+    .btn:disabled{
+      opacity:.55;
+      cursor:not-allowed;
+      transform:none !important;
+      box-shadow:none !important;
+    }
+    .btn .ripple{
+      position:absolute;
+      width: 10px; height: 10px;
+      border-radius: 999px;
+      background: rgba(255,255,255,.22);
+      transform: translate(-50%,-50%);
+      pointer-events:none;
+      animation: ripple 520ms var(--ease) both;
+    }
+    @keyframes ripple{
+      from{ opacity:.65; transform: translate(-50%,-50%) scale(1); }
+      to{ opacity:0; transform: translate(-50%,-50%) scale(22); }
+    }
+
+    .field{
+      height: var(--h);
+      width:100%;
+      padding: 0 12px;
+      border-radius: 12px;
+      border:1px solid rgba(255,255,255,.10);
+      background: rgba(255,255,255,.03);
+      color:var(--text);
+      outline:none;
+      transition: border-color var(--fast), background var(--fast), transform var(--fast);
+    }
+    .field:focus{
+      border-color: rgba(255,255,255,.22);
+      background: rgba(255,255,255,.04);
+      transform: translateY(-1px);
+    }
+    .muted{ color:var(--muted); font-size:12px; }
+    .muted.tiny{ font-size:11px; }
+
+    /* ===== ICONS (NO LETTERS) ===== */
+    .ico{
+      width: 18px;
+      height: 18px;
+      display:inline-flex;
       align-items:center;
+      justify-content:center;
+      opacity:.95;
+      flex: 0 0 auto;
+    }
+    .ico svg{ width:18px; height:18px; stroke: rgba(255,255,255,.88); fill:none; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
+
+    /* ===== BADGES ===== */
+    .badge{
+      min-width: 18px;
+      height: 18px;
+      padding: 0 6px;
+      border-radius: 8px;
+      background: var(--danger);
+      color:#0b0d10;
+      font-weight: 950;
+      font-size: 11px;
+      display:none;
+      align-items:center;
+      justify-content:center;
+      line-height:18px;
+      box-shadow: 0 10px 28px rgba(0,0,0,.30);
+      transform: translateZ(0);
+      animation: pop 240ms var(--ease) both;
+    }
+    .badge.show{ display:flex; }
+    @keyframes pop{
+      from{ transform: scale(.8); opacity:0; }
+      to{ transform: scale(1); opacity:1; }
+    }
+
+    /* ===== LOGIN OVERLAY ===== */
+    .overlay{
+      position:absolute; inset:0;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      background: rgba(0,0,0,.58);
+      backdrop-filter: blur(10px);
+      z-index: 50;
+      opacity: 1;
+      transition: opacity var(--med), transform var(--med), filter var(--med);
+    }
+    .overlay.hidden{ opacity:0; pointer-events:none; }
+
+    .loginCard{
+      width:min(420px, 94vw);
+      border:1px solid var(--stroke);
+      border-radius: 18px;
+      background: rgba(10,12,15,.92);
+      box-shadow: var(--shadow2);
+      padding: 16px;
+      display:flex;
+      flex-direction:column;
+      gap: 12px;
+      transform: translateY(0);
+      animation: loginIn 520ms var(--ease) both;
+    }
+    @keyframes loginIn{
+      from{ opacity:0; transform: translateY(10px) scale(.985); filter: blur(2px); }
+      to{ opacity:1; transform: translateY(0) scale(1); filter: blur(0); }
+    }
+
+    .brandRow{
+      display:flex; align-items:center; justify-content:space-between; gap:10px;
+    }
+    .brand{
+      font-weight: 950;
+      letter-spacing: .2px;
+      font-size: 15px;
     }
 
     .passRow{ position:relative; }
     .eye{
       position:absolute;
-      right: 10px;
+      right: 8px;
       top: 50%;
       transform: translateY(-50%);
-      padding: 6px 8px;
-      border-radius: 10px;
-      border:1px solid var(--stroke2);
+      height: 30px;
+      width: 38px;
+      border-radius: 12px;
+      border:1px solid rgba(255,255,255,.10);
       background: rgba(255,255,255,.03);
-      font-size:12px;
+      display:flex;
+      align-items:center;
+      justify-content:center;
       cursor:pointer;
+      transition: background var(--fast), transform var(--fast), border-color var(--fast);
       user-select:none;
     }
+    .eye:hover{ background: rgba(255,255,255,.05); transform: translateY(-50%) translateY(-1px); }
 
-    /* Main app layout */
-    .layout{ flex:1; display:flex; min-width:0; }
+    .btnRow{
+      display:flex;
+      gap:10px;
+      align-items:center;
+    }
+    .btnRow .btn{ flex:1; }
+
+    /* ===== MAIN LAYOUT ===== */
+    .layout{ flex:1; display:flex; min-width:0; min-height:0; }
     .sidebar{
       width: 290px;
-      border-right:1px solid var(--stroke);
-      padding: 12px;
+      border-right: 1px solid var(--stroke);
+      padding: 10px;
       display:flex;
       flex-direction:column;
-      gap:10px;
+      gap: 10px;
       min-width: 260px;
       max-width: 320px;
       min-height:0;
-    }
-    .topbar{
-      display:flex;
-      align-items:center;
-      justify-content:space-between;
-      gap:10px;
-      padding: 12px;
-      border-bottom:1px solid var(--stroke);
-      min-width:0;
+      background: rgba(0,0,0,.18);
     }
     .main{
       flex:1;
@@ -233,156 +349,204 @@
       min-height:0;
     }
 
-    .pill{
-      display:flex; align-items:center; gap:10px;
-      padding: 8px 10px;
-      border-radius: 999px;
-      border:1px solid var(--stroke);
+    /* ===== ROWS / LIST ITEMS ===== */
+    .row{
+      height: 42px;
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap: 12px;
+      padding: 0 10px;
+      border-radius: 14px;
+      border:1px solid rgba(255,255,255,.07);
       background: rgba(255,255,255,.02);
       cursor:pointer;
       user-select:none;
-      min-width:0;
-      max-width: 260px;
-    }
-    .pillName{
-      font-weight:900;
-      white-space:nowrap;
+      transition: transform var(--fast), background var(--fast), border-color var(--fast), box-shadow var(--fast);
+      position:relative;
       overflow:hidden;
-      text-overflow:ellipsis;
-      font-size:12px;
     }
-    .pillSub{
+    .row:hover{
+      background: rgba(255,255,255,.03);
+      border-color: rgba(255,255,255,.10);
+      transform: translateY(-1px);
+      box-shadow: 0 12px 32px rgba(0,0,0,.35);
+    }
+    .row:active{
+      transform: translateY(0) scale(.99);
+    }
+    .row::after{
+      content:"";
+      position:absolute; inset:0;
+      background: radial-gradient(400px 140px at 20% 0%, rgba(255,255,255,.08), transparent 55%);
+      opacity:0;
+      transition: opacity var(--fast);
+      pointer-events:none;
+    }
+    .row:hover::after{ opacity:1; }
+
+    .rowLeft{ display:flex; align-items:center; gap:10px; min-width:0; }
+    .nameCol{ min-width:0; display:flex; flex-direction:column; gap:2px; }
+    .rowName{ font-weight: 950; font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .rowSub{ font-size:11px; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+
+    .chip{
+      height: 24px;
+      padding: 0 10px;
+      border-radius: 999px;
+      border:1px solid rgba(255,255,255,.10);
+      background: rgba(255,255,255,.03);
+      display:inline-flex;
+      align-items:center;
+      gap:8px;
       font-size:11px;
-      color:var(--muted);
+      color: rgba(255,255,255,.88);
+      user-select:none;
+    }
+
+    /* ===== STATUS DOTS ===== */
+    .statusDot{
+      width:10px; height:10px;
+      border-radius: 99px;
+      border:1px solid rgba(255,255,255,.14);
+      background: rgba(255,255,255,.18);
+      flex: 0 0 auto;
+      position:relative;
+      animation: dotIn 260ms var(--ease) both;
+    }
+    @keyframes dotIn{ from{ transform:scale(.7); opacity:0; } to{ transform:scale(1); opacity:1; } }
+    .statusDot.online{ background: var(--online); box-shadow: 0 0 0 3px rgba(67,209,139,.12); }
+    .statusDot.idle{ background: var(--idle); box-shadow: 0 0 0 3px rgba(255,209,102,.12); }
+    .statusDot.dnd{ background: var(--dnd); box-shadow: 0 0 0 3px rgba(255,82,82,.12); }
+    .statusDot.offline{ background: var(--offline); box-shadow: 0 0 0 3px rgba(107,122,144,.12); }
+
+    /* ===== TOPBAR ===== */
+    .topbar{
+      height: 56px;
+      padding: 10px 12px;
+      border-bottom:1px solid var(--stroke);
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap: 12px;
+      min-width:0;
+      background: rgba(0,0,0,.12);
+    }
+    .titleBlock{ min-width:0; display:flex; flex-direction:column; gap:2px; }
+    .chatTitle{
+      font-weight: 950;
+      font-size: 12.5px;
       white-space:nowrap;
       overflow:hidden;
       text-overflow:ellipsis;
+      letter-spacing:.2px;
+      transition: transform var(--fast), opacity var(--fast);
     }
+    .chatTitle.clickable{ cursor:pointer; }
+    .chatTitle.clickable:hover{ transform: translateY(-1px); }
+    .chatHint{ font-size:11px; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 
-    /* Status dot with proper colors */
-    .statusDot{
-      width:10px; height:10px; border-radius:99px;
-      background: rgba(255,255,255,.18);
-      border:1px solid rgba(255,255,255,.12);
-      flex:0 0 auto;
-    }
-    .statusDot.online{
-      background: var(--online);
-      border-color: rgba(72,209,140,.25);
-      box-shadow: 0 0 0 3px rgba(72,209,140,.10);
-    }
-    .statusDot.idle{
-      background: var(--idle);
-      border-color: rgba(255,209,102,.35);
-      box-shadow: 0 0 0 3px rgba(255,209,102,.12);
-    }
-    .statusDot.dnd{
-      background: var(--dnd);
-      border-color: rgba(255,82,82,.35);
-      box-shadow: 0 0 0 3px rgba(255,82,82,.12);
-    }
-    .statusDot.offline{
-      background: var(--offline);
-      border-color: rgba(100,116,139,.35);
-      box-shadow: 0 0 0 3px rgba(100,116,139,.10);
-    }
-
-    /* Red curved square badge (Discord-ish) */
-    .badge{
-      min-width: 18px;
-      height: 18px;
-      padding: 0 6px;
-      border-radius: 8px; /* curved square */
-      background: var(--danger);
-      color:#0b0d10;
-      font-weight: 950;
-      font-size: 11px;
+    .mePill{
+      height: 38px;
+      padding: 0 10px;
+      border-radius: 999px;
+      border:1px solid rgba(255,255,255,.10);
+      background: rgba(255,255,255,.03);
       display:none;
       align-items:center;
-      justify-content:center;
-      line-height:18px;
-      box-shadow: 0 8px 20px rgba(0,0,0,.28);
+      gap:10px;
+      cursor:pointer;
+      user-select:none;
+      min-width: 0;
+      transition: transform var(--fast), background var(--fast), border-color var(--fast), box-shadow var(--fast);
     }
-    .badge.show{ display:flex; }
+    .mePill:hover{
+      transform: translateY(-1px);
+      background: rgba(255,255,255,.05);
+      box-shadow: 0 12px 34px rgba(0,0,0,.35);
+    }
+    .meName{ font-weight: 950; font-size: 12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width: 180px; }
+    .meSub{ font-size:11px; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width: 180px; }
 
-    .sectionTitle{
-      display:flex; align-items:center; justify-content:space-between; gap:10px;
-      color:#dbe6f1;
-      font-size:12px;
-      font-weight:950;
-      margin-top:4px;
-    }
-
-    .scroll{
-      overflow:auto;
-      min-height:0;
-      padding-right: 2px;
-    }
-    .scroll::-webkit-scrollbar{ width:10px; }
+    /* ===== SCROLL ===== */
+    .scroll{ overflow:auto; min-height:0; padding-right: 2px; }
+    .scroll::-webkit-scrollbar{ width: 10px; }
     .scroll::-webkit-scrollbar-thumb{
       background: rgba(255,255,255,.08);
-      border-radius:99px;
-      border:3px solid transparent;
+      border-radius: 99px;
+      border: 3px solid transparent;
       background-clip: content-box;
     }
 
-    .list{ display:flex; flex-direction:column; gap:8px; }
-
-    .row{
-      display:flex; align-items:center; justify-content:space-between; gap:10px;
-      padding: 10px 10px;
-      border-radius: 14px;
-      border:1px solid var(--stroke);
+    /* ===== ONLINE PANEL (compact, collapsible) ===== */
+    .panel{
+      border:1px solid rgba(255,255,255,.07);
+      border-radius: 16px;
       background: rgba(255,255,255,.02);
-      cursor:pointer;
-      user-select:none;
+      overflow:hidden;
     }
-    .row:hover{ background: rgba(255,255,255,.03); }
-
-    .rowLeft{ display:flex; gap:10px; align-items:center; min-width:0; }
-    .nameCol{ min-width:0; }
-    .rowName{ font-weight:900; font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-    .rowSub{ font-size:11px; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-
-    /* Icon box used in places where you do NOT want a green dot */
-    .iconBox{
-      width: 26px; height: 26px;
-      border-radius: 10px;
-      border:1px solid var(--stroke2);
-      background: rgba(255,255,255,.03);
+    .panelHeader{
+      height: 40px;
+      padding: 0 10px;
       display:flex;
       align-items:center;
-      justify-content:center;
-      color: rgba(255,255,255,.85);
+      justify-content:space-between;
+      gap: 10px;
+      border-bottom: 1px solid rgba(255,255,255,.06);
+      background: rgba(0,0,0,.10);
+    }
+    .panelTitle{
+      display:flex;
+      align-items:center;
+      gap:10px;
+      min-width:0;
       font-weight: 950;
-      flex: 0 0 auto;
-      user-select:none;
+      font-size: 12px;
+      letter-spacing:.2px;
     }
-
-    /* Chat */
-    .chatTitle{
-      font-weight:950;
-      white-space:nowrap;
+    .panelRight{ display:flex; align-items:center; gap:10px; }
+    .panelBody{
+      max-height: 140px;
+      transition: max-height var(--slow), opacity var(--med);
+      opacity:1;
+    }
+    .panelBody.collapsed{
+      max-height: 0px;
+      opacity:0;
       overflow:hidden;
-      text-overflow:ellipsis;
-      font-size:12px;
     }
-    .chatTitle.clickable{ cursor:pointer; }
-    .chatHint{ font-size:11px; color:var(--muted); }
 
+    /* ===== MESSAGES PANEL ===== */
+    .sectionTitle{
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap: 10px;
+      font-weight: 950;
+      font-size: 12px;
+      padding: 2px 2px 0 2px;
+      letter-spacing:.2px;
+    }
+    .messagesPanel{
+      display:flex;
+      flex-direction:column;
+      gap: 10px;
+      flex:1;
+      min-height:0;
+    }
+
+    /* ===== CHAT ===== */
     .chatBox{
       flex:1;
       padding: 12px;
       overflow:auto;
       min-height:0;
-      opacity: 1;
-      transform: translateY(0);
-      transition: opacity .18s ease, transform .18s ease, filter .18s ease;
+      transition: opacity var(--med), transform var(--med), filter var(--med);
     }
     .chatBox.fading{
-      opacity: 0;
-      transform: translateY(4px);
-      filter: blur(0.5px);
+      opacity:0;
+      transform: translateY(6px);
+      filter: blur(1px);
     }
 
     .msg{
@@ -391,47 +555,68 @@
     }
     .bubble{
       max-width: 70%;
-      border:1px solid var(--stroke);
+      border:1px solid rgba(255,255,255,.07);
       background: rgba(255,255,255,.02);
-      border-radius: 14px;
+      border-radius: 16px;
       padding: 10px 10px;
-      transition: transform .12s ease, background .12s ease;
+      transform: translateY(0);
+      transition: transform var(--fast), background var(--fast), border-color var(--fast), box-shadow var(--fast);
+      animation: msgIn 320ms var(--ease) both;
+      box-shadow: 0 10px 28px rgba(0,0,0,.25);
+    }
+    @keyframes msgIn{
+      from{ opacity:0; transform: translateY(6px); filter: blur(1px); }
+      to{ opacity:1; transform: translateY(0); filter: blur(0); }
     }
     .bubble:hover{
       background: rgba(255,255,255,.03);
       transform: translateY(-1px);
+      border-color: rgba(255,255,255,.10);
+      box-shadow: 0 16px 42px rgba(0,0,0,.35);
     }
     .meta{
-      display:flex; align-items:center; justify-content:space-between; gap:10px;
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap: 10px;
       margin-bottom: 6px;
     }
     .u{
-      font-weight:950;
-      font-size:12px;
+      font-weight: 950;
+      font-size: 12px;
       cursor:pointer;
       user-select:none;
+      transition: transform var(--fast), opacity var(--fast);
     }
-    .t{
-      font-size:11px;
-      color:var(--muted);
-      flex:0 0 auto;
-    }
+    .u:hover{ transform: translateY(-1px); }
+    .t{ font-size:11px; color:var(--muted); flex: 0 0 auto; }
     .body{
       font-size:12px;
       color: var(--text);
-      white-space:pre-wrap;
-      word-break:break-word;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .mention{
+      color: var(--danger);
+      font-weight: 950;
     }
 
+    /* ===== COMPOSER ===== */
     .composer{
+      padding: 10px 12px 12px 12px;
       border-top:1px solid var(--stroke);
-      padding: 12px;
       display:flex;
       flex-direction:column;
-      gap:10px;
+      gap: 10px;
+      background: rgba(0,0,0,.12);
     }
-    .composerRow{ display:flex; gap:10px; align-items:stretch; }
+    .composerRow{
+      display:flex;
+      gap: 10px;
+      align-items:stretch;
+    }
     .composerRow .field{ flex:1; }
+    .composerRow .btn{ width: 108px; }
 
     .cooldown{
       display:none;
@@ -440,7 +625,9 @@
       color: var(--muted);
       font-size:11px;
       user-select:none;
+      transition: transform var(--fast), opacity var(--fast);
     }
+    .cooldown.warn{ color: var(--danger); }
     .bar{
       flex:1;
       height: 10px;
@@ -448,15 +635,15 @@
       border:1px solid rgba(255,255,255,.10);
       background: rgba(255,255,255,.05);
       overflow:hidden;
+      position:relative;
     }
     .barFill{
       width:0%;
       height:100%;
       background: rgba(255,255,255,.18);
-      transition: width .06s linear;
+      transition: width 70ms linear;
     }
-    .cooldown.warn{ color: var(--danger); }
-    .shake{ animation: shake .35s ease; }
+    .shake{ animation: shake 320ms ease; }
     @keyframes shake{
       0%,100%{ transform: translateX(0); }
       20%{ transform: translateX(-4px); }
@@ -465,59 +652,124 @@
       80%{ transform: translateX(3px); }
     }
 
-    /* Modals */
+    /* ===== LOADING OVERLAY ===== */
+    .loading{
+      position:absolute; inset:0;
+      display:none;
+      align-items:center;
+      justify-content:center;
+      background: rgba(0,0,0,.58);
+      backdrop-filter: blur(10px);
+      z-index: 55;
+      opacity:0;
+      transition: opacity var(--med);
+    }
+    .loading.show{
+      display:flex;
+      opacity:1;
+    }
+    .loader{
+      width:min(360px, 92vw);
+      border:1px solid rgba(255,255,255,.10);
+      border-radius: 18px;
+      background: rgba(10,12,15,.92);
+      box-shadow: var(--shadow2);
+      padding: 16px;
+      display:flex;
+      flex-direction:column;
+      gap: 10px;
+      transform: translateY(6px);
+      animation: loaderIn 320ms var(--ease) both;
+    }
+    @keyframes loaderIn{
+      from{ opacity:0; transform: translateY(10px) scale(.99); }
+      to{ opacity:1; transform: translateY(0) scale(1); }
+    }
+    .loadRow{ display:flex; align-items:center; gap:10px; }
+    .spinner{
+      width: 18px; height: 18px;
+      border-radius: 999px;
+      border:2px solid rgba(255,255,255,.14);
+      border-top-color: rgba(255,255,255,.70);
+      animation: spin 650ms linear infinite;
+    }
+    @keyframes spin{ to{ transform: rotate(360deg);} }
+    .dots{
+      display:inline-flex;
+      gap:5px;
+      margin-left: 2px;
+    }
+    .dot{
+      width:6px; height:6px;
+      border-radius: 99px;
+      background: rgba(255,255,255,.55);
+      animation: dot 900ms var(--ease) infinite;
+      opacity:.5;
+    }
+    .dot:nth-child(2){ animation-delay: 120ms; }
+    .dot:nth-child(3){ animation-delay: 240ms; }
+    @keyframes dot{
+      0%,100%{ transform: translateY(0); opacity:.45; }
+      50%{ transform: translateY(-4px); opacity:.9; }
+    }
+
+    /* ===== MODAL ===== */
     .modalBack{
       position:fixed; inset:0;
-      background: rgba(0,0,0,.55);
-      backdrop-filter: blur(6px);
+      background: rgba(0,0,0,.58);
+      backdrop-filter: blur(10px);
       display:none;
       align-items:center;
       justify-content:center;
       z-index: 60;
       padding: 18px;
       opacity: 0;
-      transition: opacity .18s ease;
+      transition: opacity var(--med);
     }
     .modalBack.show{
       display:flex;
       opacity:1;
     }
     .modal{
-      width:min(520px, 96vw);
-      border:1px solid var(--stroke);
+      width:min(560px, 96vw);
+      border:1px solid rgba(255,255,255,.10);
       border-radius: 18px;
-      background: rgba(12,14,17,.92);
-      box-shadow: var(--shadow);
-      padding: 14px;
+      background: rgba(10,12,15,.92);
+      box-shadow: var(--shadow2);
+      padding: 12px;
       display:flex;
       flex-direction:column;
-      gap:10px;
-      max-height: min(70vh, 560px);
+      gap: 10px;
+      max-height: min(72vh, 600px);
       overflow:auto;
-      transform: translateY(4px);
-      opacity: .98;
-      transition: transform .18s ease, opacity .18s ease;
+      transform: translateY(8px);
+      animation: modalIn 280ms var(--ease) both;
     }
-    .modalBack.show .modal{
-      transform: translateY(0);
-      opacity: 1;
+    @keyframes modalIn{
+      from{ opacity:0; transform: translateY(14px) scale(.99); filter: blur(1px); }
+      to{ opacity:1; transform: translateY(0) scale(1); filter: blur(0); }
     }
     .modalTop{
-      display:flex; align-items:center; justify-content:space-between; gap:10px;
-      position:sticky; top:0;
-      background: rgba(12,14,17,.92);
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap: 10px;
+      position:sticky;
+      top:0;
+      background: rgba(10,12,15,.92);
       padding-bottom: 8px;
       z-index: 2;
     }
     .modalTitle{
-      font-weight:950;
-      font-size:13px;
+      font-weight: 950;
+      font-size: 13px;
+      letter-spacing:.2px;
       white-space:nowrap;
       overflow:hidden;
       text-overflow:ellipsis;
     }
 
-    /* Toasts */
+    /* ===== TOASTS ===== */
     .toasts{
       position:fixed;
       right: 16px;
@@ -529,30 +781,35 @@
       pointer-events:none;
     }
     .toast{
-      pointer-events:none;
-      width: min(320px, 92vw);
-      border:1px solid var(--stroke);
-      border-radius: 14px;
-      background: rgba(12,14,17,.92);
-      box-shadow: var(--shadow);
-      padding: 10px 10px;
+      width: min(340px, 92vw);
+      border:1px solid rgba(255,255,255,.10);
+      border-radius: 16px;
+      background: rgba(10,12,15,.92);
+      box-shadow: var(--shadow2);
+      padding: 10px 12px;
       display:flex;
       gap:10px;
       transform: translateY(0);
       opacity:1;
-      transition: opacity .25s ease, transform .25s ease;
+      transition: opacity var(--med), transform var(--med), filter var(--med);
+      animation: toastIn 220ms var(--ease) both;
+    }
+    @keyframes toastIn{
+      from{ opacity:0; transform: translateY(10px); filter: blur(1px); }
+      to{ opacity:1; transform: translateY(0); filter: blur(0); }
     }
     .toastDot{
-      width:10px; height:10px; border-radius:99px;
+      width:10px; height:10px;
+      border-radius:99px;
       background: var(--online);
-      box-shadow: 0 0 0 3px rgba(72,209,140,.10);
-      margin-top: 2px;
+      box-shadow: 0 0 0 3px rgba(67,209,139,.12);
+      margin-top: 3px;
       flex:0 0 auto;
     }
-    .toastTitle{ font-weight:950; font-size:12px; }
+    .toastTitle{ font-weight: 950; font-size:12px; }
     .toastMsg{ color:var(--muted); font-size:12px; }
 
-    /* Footer */
+    /* ===== FOOTER ===== */
     .footer{
       position:fixed;
       left: 50%;
@@ -565,153 +822,52 @@
       font-size: 11px;
       z-index: 10;
       user-select:none;
+      opacity:.85;
+      transition: opacity var(--fast), transform var(--fast);
     }
+    .footer:hover{ opacity:1; transform: translateX(-50%) translateY(-1px); }
     .footer a{ color: rgba(255,255,255,.70); text-decoration:none; }
     .footer a:hover{ text-decoration:underline; }
 
-    /* Loading screen */
-    .loading{
-      position:absolute; inset:0;
-      display:none;
-      align-items:center;
-      justify-content:center;
-      background: rgba(0,0,0,.55);
-      backdrop-filter: blur(6px);
-      z-index: 55;
-      opacity:0;
-      transition: opacity .18s ease;
-    }
-    .loading.show{
-      display:flex;
-      opacity:1;
-    }
-    .loader{
-      width:min(360px, 90vw);
-      border:1px solid var(--stroke);
+    /* small flourish for “dynamic” feel on focus */
+    .focusGlow{
+      position:absolute; inset:-2px;
       border-radius: 18px;
-      background: rgba(12,14,17,.92);
-      box-shadow: var(--shadow);
-      padding: 16px;
-      display:flex;
-      flex-direction:column;
-      gap:10px;
-      transform: translateY(4px);
-      transition: transform .18s ease;
-    }
-    .loading.show .loader{ transform: translateY(0); }
-    .spinner{
-      width: 18px; height: 18px;
-      border-radius: 999px;
-      border:2px solid rgba(255,255,255,.16);
-      border-top-color: rgba(255,255,255,.60);
-      animation: spin .7s linear infinite;
-    }
-    @keyframes spin{ to{ transform: rotate(360deg);} }
-
-    /* Custom cursor */
-    .cursorDot, .cursorRing, .cursorTrail{
-      position:fixed;
-      left:0; top:0;
-      transform: translate(-50%,-50%);
       pointer-events:none;
-      z-index: 9999;
-      will-change: transform, opacity;
-    }
-    .cursorDot{
-      width:8px; height:8px;
-      border-radius: 99px;
-      background: rgba(255,255,255,.85);
-      opacity:.9;
-    }
-    .cursorRing{
-      width:24px; height:24px;
-      border-radius: 99px;
-      border:1px solid rgba(255,255,255,.35);
-      opacity:.55;
-    }
-    .cursorTrail{
-      width: 10px; height: 10px;
-      border-radius: 99px;
-      background: rgba(255,255,255,.28);
       opacity:0;
+      background: radial-gradient(900px 240px at 50% 0%, rgba(255,255,255,.08), transparent 60%);
+      transition: opacity var(--med);
     }
+    .card:focus-within .focusGlow{ opacity:1; }
 
-    /* Make sure no element shows native cursor when custom cursor is on */
-    a, button, input, textarea, .row, .btn, .pill { cursor: none !important; }
-
-    /* Sidebar sizing fix: Online section is capped so Messages are always visible */
-    .onlinePanel{
-      border:1px solid var(--stroke);
-      border-radius: 14px;
-      background: rgba(255,255,255,.02);
-      padding: 10px;
-      display:flex;
-      flex-direction:column;
-      gap:10px;
-    }
-    .onlineHeader{
-      display:flex;
-      align-items:center;
-      justify-content:space-between;
-      gap:10px;
-    }
-    .onlineHeader .left{
-      display:flex;
-      align-items:center;
-      gap:10px;
-      min-width:0;
-    }
-    .onlineHeader .left .title{
-      font-weight:950;
-      font-size:12px;
-      white-space:nowrap;
-      overflow:hidden;
-      text-overflow:ellipsis;
-    }
-    .onlineHeader .right{
-      display:flex;
-      align-items:center;
-      gap:10px;
-      flex:0 0 auto;
-    }
-    .onlineWrap{
-      max-height: 140px; /* main fix */
-    }
-    .onlineWrap.collapsed{
-      max-height: 0;
-      overflow: hidden;
-      padding: 0;
-      margin: 0;
-    }
-    .messagesPanel{
-      display:flex;
-      flex-direction:column;
-      gap:10px;
-      flex:1;
-      min-height:0;
-    }
+    /* layout helpers */
+    .grow{ flex:1; min-width:0; }
+    .tight{ display:flex; align-items:center; gap:10px; }
   </style>
 </head>
 
 <body>
-  <div class="bg">
-    <div class="stars"></div>
-    <div class="stars2"></div>
-    <div class="stars3"></div>
+  <!-- Dotted star background -->
+  <div class="bg" aria-hidden="true">
+    <div class="starLayer l1"></div>
+    <div class="starLayer l2"></div>
+    <div class="starLayer l3"></div>
+    <div class="twinkle"></div>
   </div>
-
-  <!-- Cursor -->
-  <div id="cursorDot" class="cursorDot"></div>
-  <div id="cursorRing" class="cursorRing"></div>
 
   <div class="shell">
     <div class="card" id="card">
+      <div class="focusGlow"></div>
+
       <!-- Loading -->
       <div class="loading" id="loading">
         <div class="loader">
-          <div style="display:flex;align-items:center;gap:10px">
+          <div class="loadRow">
             <div class="spinner"></div>
-            <div style="font-weight:950">Loading</div>
+            <div style="font-weight:950;letter-spacing:.2px">Loading</div>
+            <div class="dots" aria-hidden="true">
+              <div class="dot"></div><div class="dot"></div><div class="dot"></div>
+            </div>
           </div>
           <div class="muted" id="loaderSub">syncing…</div>
         </div>
@@ -722,7 +878,7 @@
         <div class="loginCard" id="loginCard">
           <div class="brandRow">
             <div class="brand">tonkotsu.online</div>
-            <div class="muted">minimal chat</div>
+            <div class="muted tiny">compact chat</div>
           </div>
 
           <div>
@@ -733,27 +889,33 @@
           <div class="passRow">
             <div class="muted" style="margin-bottom:6px">Password (letters/numbers only, min 4)</div>
             <input class="field" id="password" type="password" placeholder="••••" autocomplete="current-password" />
-            <div class="eye" id="togglePass" title="Show/Hide">◉</div>
+            <div class="eye" id="togglePass" title="Show/Hide password">
+              <span class="ico" aria-hidden="true">
+                <svg viewBox="0 0 24 24"><path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12Z"/><path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z"/></svg>
+              </span>
+            </div>
           </div>
 
           <div class="btnRow">
-            <button class="btn primary" id="joinBtn" style="flex:1">Log in / Create</button>
+            <button class="btn primary" id="joinBtn">Log in / Create</button>
             <button class="btn" id="guestBtn">Guest</button>
           </div>
 
-          <div class="muted">
+          <div class="muted tiny" style="line-height:1.45">
             Guests can only chat in Global and have slower cooldown.
           </div>
         </div>
       </div>
 
       <!-- App -->
-      <div class="layout" id="app" style="display:flex; flex:1; min-width:0;">
+      <div class="layout" id="app">
         <div class="sidebar">
-          <!-- Inbox button (no green dot) -->
+          <!-- Inbox -->
           <div class="row" id="inboxBtn" title="Inbox (mentions, invites, friend requests)">
             <div class="rowLeft">
-              <div class="iconBox">IN</div>
+              <span class="ico" aria-hidden="true">
+                <svg viewBox="0 0 24 24"><path d="M4 4h16v12H4z"/><path d="M4 13h4l2 3h4l2-3h4"/></svg>
+              </span>
               <div class="nameCol">
                 <div class="rowName">Inbox</div>
                 <div class="rowSub">mentions • invites • requests</div>
@@ -762,53 +924,72 @@
             <div class="badge" id="inboxPing">0</div>
           </div>
 
-          <!-- Online (capped height so Messages are always visible) -->
-          <div class="onlinePanel">
-            <div class="onlineHeader">
-              <div class="left">
-                <div class="iconBox">ON</div>
-                <div class="title">Online users</div>
+          <!-- Online panel -->
+          <div class="panel">
+            <div class="panelHeader">
+              <div class="panelTitle">
+                <span class="ico" aria-hidden="true">
+                  <svg viewBox="0 0 24 24"><path d="M20 7c-3 3-13 3-16 0"/><path d="M4 7v10"/><path d="M20 7v10"/><path d="M7 17h10"/></svg>
+                </span>
+                <span style="min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Online</span>
               </div>
-              <div class="right">
-                <div class="muted" id="onlineCount">0</div>
-                <button class="btn small" id="onlineToggle" title="Collapse/Expand">Toggle</button>
+              <div class="panelRight">
+                <span class="muted tiny" id="onlineCount">0</span>
+                <button class="btn small ghost" id="onlineToggle" title="Collapse/Expand">
+                  <span class="ico" aria-hidden="true">
+                    <svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>
+                  </span>
+                </button>
               </div>
             </div>
-            <div class="scroll onlineWrap" id="onlineWrap">
-              <div class="list" id="onlineList"></div>
+            <div class="panelBody scroll" id="onlineWrap">
+              <div style="display:flex;flex-direction:column;gap:10px;padding:10px" id="onlineList"></div>
             </div>
           </div>
 
-          <!-- Messages panel always visible -->
+          <!-- Messages -->
           <div class="messagesPanel">
-            <div class="sectionTitle" style="margin-top:0">
-              <div>Messages</div>
-              <div style="display:flex;align-items:center;gap:10px">
+            <div class="sectionTitle">
+              <div class="tight">
+                <span class="ico" aria-hidden="true">
+                  <svg viewBox="0 0 24 24"><path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z"/></svg>
+                </span>
+                <span>Messages</span>
+              </div>
+
+              <div class="tight">
                 <div class="badge" id="msgPing">0</div>
-                <button class="btn small" id="createGroupBtn">Create</button>
+                <button class="btn small primary" id="createGroupBtn">
+                  <span class="ico" aria-hidden="true">
+                    <svg viewBox="0 0 24 24"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
+                  </span>
+                  <span>Create</span>
+                </button>
               </div>
             </div>
 
-            <div class="scroll" style="flex:1;min-height:0">
-              <div class="list" id="msgList"></div>
+            <div class="scroll grow" style="padding:10px">
+              <div style="display:flex;flex-direction:column;gap:10px" id="msgList"></div>
             </div>
           </div>
         </div>
 
         <div class="main">
           <div class="topbar">
-            <div style="min-width:0">
+            <div class="titleBlock grow">
               <div class="chatTitle" id="chatTitle">Global chat</div>
               <div class="chatHint" id="chatHint">shared with everyone</div>
             </div>
 
-            <!-- Top right user dropdown anchor -->
-            <div class="pill" id="mePill" style="display:none" title="Account menu">
+            <div class="mePill" id="mePill" title="Account menu">
               <div class="statusDot online" id="meStatusDot"></div>
               <div style="min-width:0">
-                <div class="pillName" id="meName">You</div>
-                <div class="pillSub" id="meSub">click for menu</div>
+                <div class="meName" id="meName">You</div>
+                <div class="meSub" id="meSub">click for menu</div>
               </div>
+              <span class="ico" aria-hidden="true">
+                <svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>
+              </span>
             </div>
           </div>
 
@@ -822,10 +1003,15 @@
 
             <div class="composerRow">
               <input class="field" id="message" placeholder="Type a message…" />
-              <button class="btn primary" id="sendBtn">Send</button>
+              <button class="btn primary" id="sendBtn">
+                <span class="ico" aria-hidden="true">
+                  <svg viewBox="0 0 24 24"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4z"/></svg>
+                </span>
+                <span>Send</span>
+              </button>
             </div>
 
-            <div class="muted" style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap">
+            <div class="muted tiny" style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap">
               <div id="cooldownLabel">Cooldown: 3s</div>
               <div id="statusLabel">Status: Online</div>
             </div>
@@ -835,7 +1021,7 @@
     </div>
   </div>
 
-  <!-- Footer under the whole box -->
+  <!-- Footer -->
   <div class="footer">
     <a href="https://ko-fi.com/fishy_x1" target="_blank" rel="noreferrer">Support on Ko-fi</a>
     <span>•</span>
@@ -847,7 +1033,12 @@
     <div class="modal">
       <div class="modalTop">
         <div class="modalTitle" id="modalTitle">Modal</div>
-        <button class="btn small" id="modalClose">Close</button>
+        <button class="btn small" id="modalClose">
+          <span class="ico" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="M18 6 6 18"/><path d="M6 6l12 12"/></svg>
+          </span>
+          <span>Close</span>
+        </button>
       </div>
       <div id="modalBody"></div>
     </div>
