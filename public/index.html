@@ -1,823 +1,282 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8"/>
-  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>tonkotsu.online</title>
 
   <style>
     :root{
-      --bg:#0b0d12;      /* discord-ish */
-      --bg2:#07080c;
-      --panel:#0f1219;
-      --panel2:#0d1016;
-      --stroke:rgba(255,255,255,.08);
-      --stroke2:rgba(255,255,255,.12);
-      --text:#e9eef7;
-      --muted:#9aa6b6;
-
-      --online:#3bd47f;
-      --idle:#ffd166;
-      --dnd:#ff4d4d;
-      --offline:#6d7a8f;
-
-      --danger:#ff4d4d;
-      --shadow: 0 20px 80px rgba(0,0,0,.65);
-      --ease: cubic-bezier(.2,.85,.2,1);
-      --fast: 140ms var(--ease);
-      --med: 220ms var(--ease);
-      --slow: 520ms var(--ease);
-
-      --radius: 14px;
-      --h: 34px;
-      --compact: 10px;
+      --bg:#05070b;
+      --panel:#0d1016;
+      --panel2:#10141c;
+      --stroke:#1a1f2a;
+      --text:#e8edf3;
+      --muted:#8b96a8;
+      --accent:#6b8cff;
+      --ok:#48d18c;
+      --warn:#ff5f5f;
+      --radius:14px;
+      --anim: cubic-bezier(.2,.9,.2,1);
     }
 
     *{ box-sizing:border-box; }
     html,body{ height:100%; }
     body{
       margin:0;
-      background: radial-gradient(1200px 700px at 30% 15%, rgba(255,255,255,.05), transparent 55%),
-                  linear-gradient(180deg, var(--bg), var(--bg2));
+      background:var(--bg);
       color:var(--text);
-      font: 520 12.5px/1.35 ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+      font: 13px/1.3 system-ui, sans-serif;
       overflow:hidden;
-
-      /* custom cursor from the start */
       cursor:none;
     }
 
-    /* dotted stars background (global) */
+    /* Star background */
     .bg{
       position:fixed; inset:0;
-      pointer-events:none;
-      opacity:.9;
+      background:
+        radial-gradient(1px 1px at 20px 30px, #fff5, transparent),
+        radial-gradient(1px 1px at 60px 80px, #fff4, transparent),
+        radial-gradient(1px 1px at 120px 50px, #fff6, transparent),
+        radial-gradient(1px 1px at 200px 140px, #fff3, transparent),
+        radial-gradient(1px 1px at 260px 190px, #fff5, transparent);
+      background-size: 300px 300px;
+      animation: drift 90s linear infinite;
+      opacity:.5;
     }
-    .stars{
-      position:absolute; inset:-250px;
-      background-repeat:repeat;
-      background-size: 280px 280px;
-      opacity:.45;
-      animation: drift 140s linear infinite;
-      background-image:
-        radial-gradient(1px 1px at 20px 24px, rgba(255,255,255,.60), transparent 55%),
-        radial-gradient(1px 1px at 92px 140px, rgba(255,255,255,.52), transparent 55%),
-        radial-gradient(1px 1px at 150px 90px, rgba(255,255,255,.60), transparent 55%),
-        radial-gradient(1px 1px at 214px 230px, rgba(255,255,255,.55), transparent 55%),
-        radial-gradient(1px 1px at 250px 40px, rgba(255,255,255,.70), transparent 55%);
+    @keyframes drift {
+      from{ background-position:0 0; }
+      to{ background-position:-300px -300px; }
     }
-    @keyframes drift{ to{ transform: translate3d(-280px,-280px,0);} }
 
-    /* cursor */
-    #cursor,#cursor2{
-      position:fixed; top:0; left:0;
+    .cursorDot,.cursorRing{
+      position:fixed;
       pointer-events:none;
       z-index:9999;
-      transform: translate(-50%,-50%);
-      opacity:0;
-      transition: opacity var(--med);
-      mix-blend-mode: screen;
+      transform:translate(-50%,-50%);
     }
-    #cursor{
-      width:10px; height:10px; border-radius:999px;
-      background: rgba(255,255,255,.9);
-      box-shadow: 0 0 0 8px rgba(255,255,255,.06), 0 0 24px rgba(255,255,255,.14);
-      transition: width var(--fast), height var(--fast), opacity var(--med);
+    .cursorDot{
+      width:7px;height:7px;border-radius:50%;
+      background:#fff;
     }
-    #cursor2{
-      width:28px; height:28px; border-radius:999px;
-      border:1px solid rgba(255,255,255,.20);
-      background: rgba(255,255,255,.02);
-      box-shadow: 0 18px 60px rgba(0,0,0,.35);
-      transition: width var(--med), height var(--med), opacity var(--med), border-color var(--fast);
+    .cursorRing{
+      width:24px;height:24px;border-radius:50%;
+      border:1px solid #fff5;
+      transition:transform .15s var(--anim);
     }
-    .cursorPress #cursor{ width:8px; height:8px; }
-    .cursorPress #cursor2{ width:22px; height:22px; }
-    .cursorHover #cursor2{ width:36px; height:36px; border-color: rgba(255,255,255,.28); }
-    .cursorText  #cursor2{ width:44px; height:44px; border-color: rgba(255,255,255,.25); }
 
-    /* app frame */
     .shell{
       position:fixed; inset:0;
       display:flex;
       align-items:center;
       justify-content:center;
-      padding: 16px;
-    }
-    .frame{
-      width:min(1120px, 100%);
-      height:min(760px, 100%);
-      border-radius: 16px;
-      border:1px solid var(--stroke);
-      background: rgba(12,14,20,.82);
-      backdrop-filter: blur(12px);
-      box-shadow: var(--shadow);
-      overflow:hidden;
-      display:flex;
-      flex-direction:column;
-      animation: frameIn var(--slow) both;
-      position:relative;
-    }
-    @keyframes frameIn{
-      from{ opacity:0; transform: translateY(10px) scale(.99); filter: blur(2px); }
-      to  { opacity:1; transform: translateY(0) scale(1); filter: blur(0); }
+      padding:20px;
     }
 
-    /* top loading overlay (used for login transition and view switches) */
-    .loading{
+    .card{
+      width:960px;
+      height:720px;
+      border-radius:18px;
+      background:rgba(10,12,18,.85);
+      backdrop-filter: blur(14px);
+      box-shadow:0 20px 80px #0008;
+      display:flex;
+      overflow:hidden;
+      position:relative;
+      animation: pop .4s var(--anim);
+    }
+    @keyframes pop{from{transform:scale(.96);opacity:0}to{transform:scale(1);opacity:1}}
+
+    .overlay,.loading{
       position:absolute; inset:0;
-      display:none;
+      background:rgba(0,0,0,.7);
+      backdrop-filter: blur(6px);
+      display:flex;
       align-items:center;
       justify-content:center;
-      background: rgba(0,0,0,.72);
-      backdrop-filter: blur(10px);
-      z-index: 50;
-      opacity:0;
-      transition: opacity var(--med);
+      z-index:10;
+      transition:opacity .3s var(--anim);
     }
-    .loading.show{ display:flex; opacity:1; }
-    .loader{
-      width:min(380px, 92vw);
+
+    .hidden{opacity:0;pointer-events:none}
+
+    .loginCard,.loader{
+      background:var(--panel);
       border:1px solid var(--stroke);
-      border-radius: 16px;
-      background: rgba(10,12,18,.94);
-      padding: 14px;
-      box-shadow: 0 14px 60px rgba(0,0,0,.55);
+      border-radius:18px;
+      padding:22px;
+      width:380px;
       display:flex;
       flex-direction:column;
-      gap: 10px;
-      animation: pop var(--med) both;
-    }
-    @keyframes pop{
-      from{ opacity:0; transform: translateY(10px); filter: blur(1px); }
-      to  { opacity:1; transform: translateY(0); filter: blur(0); }
-    }
-    .spin{
-      width:18px; height:18px;
-      border-radius: 999px;
-      border:2px solid rgba(255,255,255,.16);
-      border-top-color: rgba(255,255,255,.75);
-      animation: spin 650ms linear infinite;
-    }
-    @keyframes spin{ to{ transform: rotate(360deg);} }
-
-    /* layout: discord-like columns */
-    .layout{
-      flex:1;
-      min-height:0;
-      display:flex;
-    }
-    .colLeft{
-      width: 280px;
-      min-width: 260px;
-      background: rgba(0,0,0,.20);
-      border-right: 1px solid var(--stroke);
-      display:flex;
-      flex-direction:column;
-      min-height:0;
-    }
-    .colMain{
-      flex:1;
-      min-width:0;
-      display:flex;
-      flex-direction:column;
-      min-height:0;
-      background: rgba(0,0,0,.10);
+      gap:14px;
+      animation: pop .35s var(--anim);
     }
 
-    /* left header */
-    .leftHeader{
-      height: 46px;
-      display:flex;
-      align-items:center;
-      justify-content:space-between;
-      padding: 0 10px;
-      border-bottom:1px solid var(--stroke);
-      background: rgba(0,0,0,.16);
-    }
-    .brand{
-      font-weight: 950;
-      letter-spacing:.2px;
-      font-size: 12.5px;
-      white-space:nowrap;
-      overflow:hidden;
-      text-overflow:ellipsis;
-      max-width: 185px;
-    }
-
-    /* buttons / fields */
-    .btn{
-      height: var(--h);
-      padding: 0 10px;
-      border-radius: 12px;
-      border:1px solid var(--stroke2);
-      background: rgba(255,255,255,.04);
-      color:var(--text);
-      cursor:pointer;
-      user-select:none;
-      display:inline-flex;
-      align-items:center;
-      justify-content:center;
-      gap:8px;
-      font-weight: 950;
-      transition: transform var(--fast), background var(--fast), border-color var(--fast), box-shadow var(--fast);
-      outline:none;
-      position:relative;
-      overflow:hidden;
-    }
-    .btn:hover{ transform: translateY(-1px); background: rgba(255,255,255,.06); box-shadow: 0 12px 34px rgba(0,0,0,.35); }
-    .btn:active{ transform: translateY(0) scale(.99); }
-    .btn.primary{ background: rgba(255,255,255,.10); border-color: rgba(255,255,255,.18); }
-    .btn.ghost{ background: transparent; border-color: rgba(255,255,255,.10); }
-    .btn.small{ height: 30px; border-radius: 11px; font-size: 12px; padding:0 10px; }
-
+    .brand{font-weight:900;font-size:18px}
     .field{
-      height: var(--h);
       width:100%;
-      border-radius: 12px;
-      border:1px solid rgba(255,255,255,.10);
-      background: rgba(255,255,255,.03);
+      background:var(--panel2);
+      border:1px solid var(--stroke);
+      border-radius:10px;
+      padding:10px 12px;
       color:var(--text);
-      padding: 0 10px;
       outline:none;
-      transition: border-color var(--fast), background var(--fast), transform var(--fast);
     }
-    .field:focus{ border-color: rgba(255,255,255,.22); background: rgba(255,255,255,.04); transform: translateY(-1px); }
-
-    .muted{ color:var(--muted); }
-    .tiny{ font-size:11px; }
-
-    /* scroll */
-    .scroll{ overflow:auto; min-height:0; }
-    .scroll::-webkit-scrollbar{ width: 10px; }
-    .scroll::-webkit-scrollbar-thumb{
-      background: rgba(255,255,255,.08);
-      border-radius: 99px;
-      border: 3px solid transparent;
-      background-clip: content-box;
+    .btn{
+      background:var(--accent);
+      color:#000;
+      border:none;
+      border-radius:10px;
+      padding:10px 14px;
+      font-weight:700;
+      cursor:pointer;
+      transition:transform .15s var(--anim),filter .15s var(--anim);
     }
+    .btn:hover{transform:scale(1.04);filter:brightness(1.1)}
 
-    /* channel list */
-    .channels{
-      padding: 10px;
+    .layout{flex:1;display:flex}
+    .sidebar{
+      width:260px;
+      background:var(--panel);
+      border-right:1px solid var(--stroke);
       display:flex;
       flex-direction:column;
-      gap: 8px;
-      min-height:0;
+      padding:12px;
+      gap:10px;
     }
-    .sectionTitle{
-      font-size: 11px;
-      letter-spacing: .2px;
-      color: rgba(255,255,255,.55);
-      font-weight: 950;
-      padding: 8px 6px 4px 6px;
-      text-transform: uppercase;
-    }
-    .item{
-      height: 38px;
-      border-radius: 12px;
-      border:1px solid rgba(255,255,255,.07);
-      background: rgba(255,255,255,.02);
-      display:flex;
-      align-items:center;
-      justify-content:space-between;
-      padding: 0 10px;
-      gap: 10px;
-      cursor:pointer;
-      user-select:none;
-      transition: transform var(--fast), background var(--fast), border-color var(--fast), box-shadow var(--fast);
-      position:relative;
-      overflow:hidden;
-    }
-    .item:hover{
-      transform: translateY(-1px);
-      background: rgba(255,255,255,.03);
-      border-color: rgba(255,255,255,.10);
-      box-shadow: 0 12px 34px rgba(0,0,0,.35);
-    }
-    .item.active{
-      background: rgba(255,255,255,.06);
-      border-color: rgba(255,255,255,.14);
-    }
-    .left{
-      display:flex;
-      align-items:center;
-      gap: 10px;
-      min-width:0;
-    }
-    .hash{
-      width: 22px;
-      height: 22px;
-      border-radius: 8px;
-      background: rgba(255,255,255,.06);
-      display:flex;
-      align-items:center;
-      justify-content:center;
-      font-weight: 950;
-      color: rgba(255,255,255,.85);
-      flex:0 0 auto;
-    }
-    .name{
-      font-weight: 950;
-      white-space:nowrap;
-      overflow:hidden;
-      text-overflow:ellipsis;
-    }
-    .sub{
-      font-size: 11px;
-      color: var(--muted);
-      white-space:nowrap;
-      overflow:hidden;
-      text-overflow:ellipsis;
-      margin-top:2px;
-    }
-    .nameCol{ min-width:0; display:flex; flex-direction:column; }
+    .main{flex:1;display:flex;flex-direction:column}
 
-    /* badges */
-    .badge{
-      min-width: 20px;
-      height: 18px;
-      padding: 0 6px;
-      border-radius: 7px;
-      background: var(--danger);
-      color:#0b0d10;
-      font-weight: 950;
-      font-size: 11px;
-      display:none;
-      align-items:center;
-      justify-content:center;
-      line-height:18px;
-      box-shadow: 0 10px 30px rgba(0,0,0,.30);
-      animation: pop2 var(--med) both;
-    }
-    .badge.show{ display:flex; }
-    @keyframes pop2{ from{ opacity:0; transform:scale(.86);} to{ opacity:1; transform:scale(1);} }
-
-    /* online list (compact) */
-    .onlineWrap{
-      border-top:1px solid var(--stroke);
-      padding: 10px;
-      display:flex;
-      flex-direction:column;
-      gap: 8px;
-      min-height: 0;
-      max-height: 180px;
-    }
-    .onlineRow{
-      height: 34px;
-      border-radius: 12px;
-      border:1px solid rgba(255,255,255,.06);
-      background: rgba(255,255,255,.02);
-      display:flex;
-      align-items:center;
-      justify-content:space-between;
-      padding: 0 10px;
-      cursor:pointer;
-      user-select:none;
-      transition: transform var(--fast), background var(--fast), border-color var(--fast), box-shadow var(--fast);
-      gap: 10px;
-    }
-    .onlineRow:hover{
-      transform: translateY(-1px);
-      background: rgba(255,255,255,.03);
-      border-color: rgba(255,255,255,.10);
-      box-shadow: 0 12px 34px rgba(0,0,0,.30);
-    }
-    .dot{
-      width:10px; height:10px;
-      border-radius: 99px;
-      border:1px solid rgba(255,255,255,.14);
-      background: rgba(255,255,255,.18);
-      flex:0 0 auto;
-    }
-    .dot.online{ background: var(--online); box-shadow: 0 0 0 3px rgba(59,212,127,.12); }
-    .dot.idle{ background: var(--idle); box-shadow: 0 0 0 3px rgba(255,209,102,.12); }
-    .dot.dnd{ background: var(--dnd); box-shadow: 0 0 0 3px rgba(255,77,77,.12); }
-    .dot.offline{ background: var(--offline); box-shadow: 0 0 0 3px rgba(109,122,143,.12); }
-
-    /* main header */
     .topbar{
-      height: 48px;
+      height:54px;
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      padding:0 12px;
       border-bottom:1px solid var(--stroke);
-      background: rgba(0,0,0,.16);
-      display:flex;
-      align-items:center;
-      justify-content:space-between;
-      padding: 0 12px;
-      gap: 12px;
-    }
-    .topic{
-      min-width:0;
-      display:flex;
-      flex-direction:column;
-      gap:2px;
-    }
-    .topicTitle{
-      font-weight: 950;
-      white-space:nowrap;
-      overflow:hidden;
-      text-overflow:ellipsis;
-    }
-    .topicTitle.clickable{ cursor:pointer; }
-    .topicTitle.clickable:hover{ transform: translateY(-1px); transition: transform var(--fast); }
-    .topicSub{
-      font-size:11px;
-      color:var(--muted);
-      white-space:nowrap;
-      overflow:hidden;
-      text-overflow:ellipsis;
+      background:var(--panel);
     }
 
-    /* account pill */
-    .mePill{
-      height: 34px;
-      border-radius: 999px;
-      border:1px solid rgba(255,255,255,.10);
-      background: rgba(255,255,255,.03);
-      padding: 0 10px;
-      display:none;
-      align-items:center;
-      gap: 10px;
+    .pill{
+      display:flex;align-items:center;gap:10px;
+      background:var(--panel2);
+      border:1px solid var(--stroke);
+      border-radius:999px;
+      padding:6px 10px;
       cursor:pointer;
-      user-select:none;
-      transition: transform var(--fast), background var(--fast), border-color var(--fast), box-shadow var(--fast);
-      max-width: 320px;
-    }
-    .mePill:hover{
-      transform: translateY(-1px);
-      background: rgba(255,255,255,.05);
-      box-shadow: 0 12px 34px rgba(0,0,0,.35);
-    }
-    .meName{
-      font-weight: 950;
-      white-space:nowrap;
-      overflow:hidden;
-      text-overflow:ellipsis;
-      max-width: 210px;
-    }
-    .caret{
-      opacity:.8;
-      font-weight: 950;
     }
 
-    /* chat area */
-    .chat{
-      flex:1;
-      min-height:0;
-      padding: 10px 12px;
-      overflow:auto;
-    }
-    .msg{
-      margin-bottom: 10px;
+    .badge{
+      background:#ff4d4d;
+      color:#000;
+      min-width:20px;
+      height:20px;
+      border-radius:8px;
       display:flex;
+      align-items:center;
+      justify-content:center;
+      font-size:11px;
+      font-weight:900;
     }
+
+    .chatBox{flex:1;padding:12px;overflow:auto}
+    .msg{margin-bottom:10px;animation:fade .2s var(--anim)}
+    @keyframes fade{from{opacity:0;transform:translateY(4px)}to{opacity:1}}
+
     .bubble{
-      max-width: 74%;
-      border-radius: 14px;
-      border:1px solid rgba(255,255,255,.07);
-      background: rgba(255,255,255,.02);
-      padding: 9px 10px;
-      box-shadow: 0 10px 30px rgba(0,0,0,.25);
-      transition: transform var(--fast), background var(--fast), border-color var(--fast), box-shadow var(--fast);
-      animation: msgIn var(--med) both;
-    }
-    @keyframes msgIn{
-      from{ opacity:0; transform: translateY(8px); filter: blur(1px); }
-      to{ opacity:1; transform: translateY(0); filter: blur(0); }
-    }
-    .bubble:hover{
-      transform: translateY(-1px);
-      background: rgba(255,255,255,.03);
-      border-color: rgba(255,255,255,.10);
-      box-shadow: 0 14px 42px rgba(0,0,0,.35);
-    }
-    .meta{
-      display:flex;
-      align-items:center;
-      justify-content:space-between;
-      gap: 10px;
-      margin-bottom: 5px;
-    }
-    .user{
-      font-weight: 950;
-      cursor:pointer;
-      user-select:none;
-      transition: transform var(--fast);
-    }
-    .user:hover{ transform: translateY(-1px); }
-    .time{
-      font-size:11px;
-      color:var(--muted);
-      flex:0 0 auto;
-    }
-    .text{
-      white-space: pre-wrap;
-      word-break: break-word;
-    }
-    .mention{
-      color: var(--danger);
-      font-weight: 950;
+      background:var(--panel2);
+      border:1px solid var(--stroke);
+      border-radius:12px;
+      padding:8px 10px;
+      max-width:75%;
     }
 
-    /* composer */
     .composer{
       border-top:1px solid var(--stroke);
-      background: rgba(0,0,0,.16);
-      padding: 10px 12px 12px 12px;
+      padding:10px;
       display:flex;
-      flex-direction:column;
-      gap: 8px;
+      gap:8px;
     }
+
     .row{
-      display:flex;
-      gap: 10px;
-      align-items:stretch;
-    }
-    .row .field{ flex:1; }
-    .row .btn{ width: 118px; }
-
-    /* footer */
-    .footer{
-      height: 38px;
-      border-top: 1px solid var(--stroke);
-      background: rgba(0,0,0,.16);
-      display:flex;
-      align-items:center;
-      justify-content:space-between;
-      padding: 0 12px;
-      font-size: 11px;
-      color: rgba(255,255,255,.62);
-    }
-    .footer a{ color: rgba(255,255,255,.74); text-decoration:none; }
-    .footer a:hover{ text-decoration:underline; }
-
-    /* login overlay (black + stars) */
-    .loginOverlay{
-      position:absolute; inset:0;
-      z-index: 60;
-      background: rgba(0,0,0,.92);
-      display:flex;
-      align-items:center;
-      justify-content:center;
-      padding: 16px;
-      opacity:1;
-      transition: opacity var(--med);
-    }
-    .loginOverlay.hidden{ opacity:0; pointer-events:none; }
-    .loginBox{
-      width:min(420px, 92vw);
+      padding:8px 10px;
+      background:var(--panel2);
+      border-radius:10px;
       border:1px solid var(--stroke);
-      border-radius: 16px;
-      background: rgba(12,14,20,.92);
-      box-shadow: 0 18px 70px rgba(0,0,0,.60);
-      padding: 14px;
       display:flex;
-      flex-direction:column;
-      gap: 12px;
-      animation: pop var(--med) both;
-      position:relative;
-      overflow:hidden;
-    }
-    .loginStars{
-      position:absolute; inset:-220px;
-      background-repeat:repeat;
-      background-size: 260px 260px;
-      opacity:.55;
-      animation: drift2 160s linear infinite;
-      background-image:
-        radial-gradient(1px 1px at 22px 28px, rgba(255,255,255,.60), transparent 55%),
-        radial-gradient(1px 1px at 68px 160px, rgba(255,255,255,.52), transparent 55%),
-        radial-gradient(1px 1px at 140px 86px, rgba(255,255,255,.60), transparent 55%),
-        radial-gradient(1px 1px at 200px 220px, rgba(255,255,255,.55), transparent 55%),
-        radial-gradient(1px 1px at 242px 44px, rgba(255,255,255,.70), transparent 55%);
-    }
-    @keyframes drift2{ to{ transform: translate3d(-260px,-260px,0);} }
-    .loginInner{ position:relative; z-index:1; display:flex; flex-direction:column; gap: 12px; }
-    .loginTitle{ font-weight: 950; font-size: 14px; letter-spacing:.2px; }
-    .loginHint{ color: var(--muted); font-size: 11px; line-height:1.45; }
-
-    /* password eye */
-    .pwWrap{ position:relative; }
-    .field.pw{ padding-right: 54px; }
-    .eye{
-      position:absolute;
-      right: 8px;
-      top:50%;
-      transform: translateY(-50%);
-      height: 28px;
-      width: 44px;
-      border-radius: 12px;
-      border:1px solid rgba(255,255,255,.10);
-      background: rgba(255,255,255,.03);
-      display:flex;
+      justify-content:space-between;
       align-items:center;
-      justify-content:center;
       cursor:pointer;
-      user-select:none;
-      transition: transform var(--fast), background var(--fast);
+      transition:background .15s var(--anim);
     }
-    .eye:hover{ transform: translateY(-50%) translateY(-1px); background: rgba(255,255,255,.05); }
+    .row:hover{background:#151a24}
 
-    /* modal */
-    .modalBack{
-      position:fixed; inset:0;
-      z-index: 70;
-      display:none;
-      align-items:center;
-      justify-content:center;
-      padding: 16px;
-      background: rgba(0,0,0,.72);
-      backdrop-filter: blur(10px);
-      opacity:0;
-      transition: opacity var(--med);
-    }
-    .modalBack.show{ display:flex; opacity:1; }
-    .modal{
-      width:min(620px, 96vw);
-      max-height: min(74vh, 640px);
-      overflow:auto;
-      border-radius: 16px;
-      border:1px solid var(--stroke);
-      background: rgba(12,14,20,.94);
-      box-shadow: 0 18px 70px rgba(0,0,0,.60);
-      padding: 12px;
-      display:flex;
-      flex-direction:column;
-      gap: 10px;
-      animation: pop var(--med) both;
-    }
-    .modalTop{
-      display:flex;
-      align-items:center;
-      justify-content:space-between;
-      gap: 10px;
-      position:sticky;
-      top:0;
-      background: rgba(12,14,20,.94);
-      padding-bottom: 8px;
-      z-index: 2;
-    }
-    .modalTitle{
-      font-weight: 950;
-      white-space:nowrap;
-      overflow:hidden;
-      text-overflow:ellipsis;
-    }
+    .statusDot{width:10px;height:10px;border-radius:50%}
+    .online{background:#48d18c}
+    .idle{background:#ffcb4c}
+    .dnd{background:#ff5f5f}
+    .offline{background:#666}
 
-    /* stats bar */
-    .bar{
-      height: 10px;
-      border-radius: 999px;
-      background: rgba(255,255,255,.06);
-      border:1px solid rgba(255,255,255,.10);
-      overflow:hidden;
-    }
-    .barFill{
-      height:100%;
-      width:0%;
-      background: rgba(255,255,255,.18);
-      transition: width var(--slow);
-    }
-
-    /* ripple */
-    .ripple{
-      position:absolute;
-      width: 12px; height: 12px;
-      border-radius: 999px;
-      background: rgba(255,255,255,.18);
-      transform: translate(-50%,-50%);
-      pointer-events:none;
-      animation: ripple 520ms var(--ease) both;
-    }
-    @keyframes ripple{
-      from{ opacity:.6; transform: translate(-50%,-50%) scale(1); }
-      to{ opacity:0; transform: translate(-50%,-50%) scale(22); }
-    }
-
-    /* reduced motion */
-    @media (prefers-reduced-motion: reduce){
-      *{ animation:none !important; transition:none !important; }
-      body{ cursor:auto; }
-      #cursor,#cursor2{ display:none; }
-    }
   </style>
 </head>
 
 <body>
-  <div class="bg" aria-hidden="true"><div class="stars"></div></div>
+<div class="bg"></div>
 
-  <div id="cursor"></div>
-  <div id="cursor2"></div>
+<div id="cursorDot" class="cursorDot"></div>
+<div id="cursorRing" class="cursorRing"></div>
 
-  <div class="shell">
-    <div class="frame" id="frame">
+<div class="shell">
+  <div class="card">
 
-      <div class="loading" id="loading">
-        <div class="loader">
-          <div style="display:flex;align-items:center;gap:10px">
-            <div class="spin"></div>
-            <div style="font-weight:950">Loading</div>
-          </div>
-          <div class="muted tiny" id="loaderSub">syncing…</div>
+    <div id="loading" class="loading hidden">
+      <div class="loader">
+        <div style="display:flex;align-items:center;gap:10px">
+          <div class="spinner"></div>
+          <div>Loading…</div>
         </div>
-      </div>
-
-      <div class="loginOverlay" id="loginOverlay">
-        <div class="loginBox">
-          <div class="loginStars" aria-hidden="true"></div>
-          <div class="loginInner">
-            <div class="loginTitle">tonkotsu.online</div>
-
-            <div>
-              <div class="muted tiny" style="margin-bottom:6px">Username (letters/numbers only, min 4)</div>
-              <input class="field" id="username" placeholder="yourname" autocomplete="username"/>
-            </div>
-
-            <div>
-              <div class="muted tiny" style="margin-bottom:6px">Password (letters/numbers only, min 4)</div>
-              <div class="pwWrap">
-                <input class="field pw" id="password" type="password" placeholder="••••" autocomplete="current-password"/>
-                <div class="eye" id="togglePass" title="Show/Hide">👁</div>
-              </div>
-            </div>
-
-            <div style="display:flex;gap:10px">
-              <button class="btn primary" id="joinBtn" style="flex:1">Log in / Create</button>
-              <button class="btn" id="guestBtn" style="flex:1">Guest</button>
-            </div>
-
-            <div class="loginHint">
-              Your session stays saved. If you close the tab and reopen, it resumes automatically.
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div class="layout" id="app">
-        <div class="colLeft">
-          <div class="leftHeader">
-            <div class="brand">tonkotsu.online</div>
-            <button class="btn small ghost" id="createGroupBtn" title="Create group">+</button>
-          </div>
-
-          <div class="channels scroll" style="flex:1">
-            <div class="sectionTitle">Messages</div>
-            <div id="channelList" style="display:flex;flex-direction:column;gap:8px"></div>
-
-            <div class="sectionTitle" style="margin-top:6px">Online</div>
-            <div class="onlineWrap scroll" id="onlineList"></div>
-          </div>
-        </div>
-
-        <div class="colMain">
-          <div class="topbar">
-            <div class="topic" style="flex:1;min-width:0">
-              <div class="topicTitle" id="topicTitle"># global</div>
-              <div class="topicSub" id="topicSub">everyone</div>
-            </div>
-
-            <div class="mePill" id="mePill" title="Account menu">
-              <div class="dot online" id="meDot"></div>
-              <div class="meName" id="meName">You</div>
-              <div class="badge" id="inboxBadge">0</div>
-              <div class="caret">▾</div>
-            </div>
-          </div>
-
-          <div class="chat scroll" id="chat"></div>
-
-          <div class="composer">
-            <div class="row">
-              <input class="field" id="message" placeholder="Message… (@user to mention)"/>
-              <button class="btn primary" id="sendBtn">Send</button>
-            </div>
-            <div class="muted tiny" style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap">
-              <div id="hintLeft">Cooldown: 3s</div>
-              <div id="hintRight">Status: Online</div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div class="footer">
-        <div><a href="https://ko-fi.com/fishy_x1" target="_blank" rel="noreferrer">Ko-fi</a></div>
-        <div>© <span id="year"></span> All rights reserved</div>
       </div>
     </div>
-  </div>
 
-  <div class="modalBack" id="modalBack">
-    <div class="modal">
-      <div class="modalTop">
-        <div class="modalTitle" id="modalTitle">Modal</div>
-        <button class="btn small" id="modalClose">Close</button>
+    <div id="loginOverlay" class="overlay">
+      <div class="loginCard">
+        <div class="brand">tonkotsu.online</div>
+        <input id="username" class="field" placeholder="Username" />
+        <div style="position:relative">
+          <input id="password" class="field" type="password" placeholder="Password" />
+          <button id="togglePass" style="position:absolute;right:8px;top:8px" class="btn">👁</button>
+        </div>
+        <button id="joinBtn" class="btn">Log in / Create</button>
+        <button id="guestBtn" class="btn">Guest</button>
+        <div class="muted">4–20 letters/numbers only</div>
       </div>
-      <div id="modalBody"></div>
     </div>
-  </div>
 
-  <script src="/socket.io/socket.io.js"></script>
-  <script src="/script.js"></script>
+    <div id="app" class="layout hidden">
+      <div class="sidebar">
+        <div class="row" id="globalBtn">🌐 Global Chat</div>
+        <div class="row" id="inboxBtn">📥 Inbox <span id="inboxPing" class="badge hidden">0</span></div>
+        <div id="onlineList"></div>
+      </div>
+
+      <div class="main">
+        <div class="topbar">
+          <div id="chatTitle">Global Chat</div>
+          <div class="pill" id="mePill">Profile ▾</div>
+        </div>
+
+        <div id="chatBox" class="chatBox"></div>
+
+        <div class="composer">
+          <input id="message" class="field" placeholder="Message…" />
+          <button id="sendBtn" class="btn">Send</button>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script src="/script.js"></script>
 </body>
 </html>
-
