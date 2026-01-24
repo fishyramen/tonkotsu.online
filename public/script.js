@@ -1171,4 +1171,3 @@ renderOnline();
 updateHints();
 
 tryResume();
-
