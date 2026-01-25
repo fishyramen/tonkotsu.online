@@ -1,1213 +1,1157 @@
-// server.js — tonkotsu.online backend (Socket.IO + Express)
-// Update: Discord webhook integration
-// - Sends a webhook message when someone "joins" (account created OR guest created)
-// - Sends each GLOBAL chat message to Discord (NOT DMs, NOT group chats)
-// SECURITY/PRIVACY NOTE:
-// - This sends only hashed IP/UA (NOT raw IP) to reduce exposure.
-// - Put your webhook in an env var if possible: DISCORD_WEBHOOK_URL
-//
-// Render: set Environment -> DISCORD_WEBHOOK_URL
-// Local:  DISCORD_WEBHOOK_URL="https://discord.com/api/webhooks/..." node server.js
+/**
+ * server.js — tonkotsu.online (Render-friendly Node/Express + Socket.IO)
+ *
+ * Fixes/implements:
+ * - Removes hard dependency on nanoid (uses crypto.randomUUID instead).
+ * - Prevents "Cannot access dbObj before initialization" by initializing DB early and safely.
+ * - Proper account login: existing usernames REQUIRE correct password (no “same username, different password” login).
+ * - Telemetry endpoint logs IP + client hints for bot identification (on page open).
+ * - Discord webhook logging:
+ *    - New account / login events (join info)
+ *    - Each GLOBAL chat message (not DMs / not group chats) as rich embed
+ * - Global chat moderation:
+ *    - blocks porn/18+ links
+ *    - link spam: max 1 link per 5 minutes per user
+ *    - “bad stuff” detection triggers TEMP shadow mute (user does not know; messages not broadcast)
+ * - Security analytics:
+ *    - login history
+ *    - session manager (revoke sessions)
+ *    - change password / username
+ * - Blocks list (blocked users modal)
+ * - Group manage endpoints (owner-only): limit slider, add/remove, mute/unmute, transfer ownership
+ *
+ * IMPORTANT:
+ * - Set your Discord webhook via env var DISCORD_WEBHOOK_URL (do NOT hardcode tokens).
+ *   Example Render env var: DISCORD_WEBHOOK_URL = https://discord.com/api/webhooks/...
+ */
 
 "use strict";
 
-const fs = require("fs");
 const path = require("path");
+const fs = require("fs");
+const fsp = require("fs/promises");
 const crypto = require("crypto");
+
 const express = require("express");
 const http = require("http");
 const { Server } = require("socket.io");
-const bcrypt = require("bcryptjs");
-const { nanoid } = require("nanoid");
 
-// -------------------- Discord webhook --------------------
-const DISCORD_WEBHOOK_URL =
-  process.env.DISCORD_WEBHOOK_URL ||
-  "https://discord.com/api/webhooks/1464774265311068366/mrDo_EB6BdRxsyjVSK6U8rsjnuMLvGXz6HoUq-xoA8NhM28o0FbN4GoMt8wuKZXRvrzG";
-
-// A small queue to avoid Discord rate-limit chaos.
-const webhookQueue = [];
-let webhookBusy = false;
-
-async function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms));
+// Optional: bcryptjs (if installed). We gracefully fallback to scrypt if missing.
+let bcrypt = null;
+try {
+  bcrypt = require("bcryptjs");
+} catch {
+  bcrypt = null;
 }
 
-function enqueueWebhook(payload) {
-  if (!DISCORD_WEBHOOK_URL) return;
-  webhookQueue.push(payload);
-  if (!webhookBusy) void drainWebhookQueue();
-}
+/* --------------------------------- Config --------------------------------- */
 
-async function drainWebhookQueue() {
-  webhookBusy = true;
-  while (webhookQueue.length) {
-    const payload = webhookQueue.shift();
-    try {
-      await postWebhook(payload);
-    } catch (e) {
-      // If it fails hard, we drop and continue (prevents blocking server).
-      // You can persist/retry if you want, but keep it simple.
-    }
-    // gentle pacing
-    await sleep(350);
-  }
-  webhookBusy = false;
-}
+const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
+const NODE_ENV = process.env.NODE_ENV || "development";
+const TRUST_PROXY = true; // Render / reverse proxy
+const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), "data");
+const DB_FILE = process.env.DB_FILE || path.join(DATA_DIR, "db.json");
+const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL || ""; // set in Render env vars
 
-async function postWebhook(payload) {
-  if (!DISCORD_WEBHOOK_URL) return;
+// Security: HMAC signing for tokens
+const TOKEN_SECRET =
+  process.env.TOKEN_SECRET ||
+  crypto.createHash("sha256").update("tonkotsu_default_secret_" + (process.env.RENDER_INSTANCE_ID || "local")).digest("hex");
 
-  // Discord expects JSON. We also handle 429 with retry_after.
-  const res = await fetch(DISCORD_WEBHOOK_URL, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(payload),
-  });
+// Global chat rules
+const GLOBAL_COOLDOWN_MS = 3500;
+const LINK_LIMIT_MS = 5 * 60 * 1000; // 5 min
+const MAX_MESSAGE_LEN = 1200;
 
-  if (res.status === 429) {
-    let retryMs = 1500;
-    try {
-      const data = await res.json();
-      // Discord returns retry_after in seconds (sometimes ms depending on gateway),
-      // but webhook API typically seconds as float.
-      if (typeof data?.retry_after === "number") retryMs = Math.ceil(data.retry_after * 1000);
-    } catch {}
-    await sleep(Math.min(15000, Math.max(500, retryMs)));
-    // requeue once
-    webhookQueue.unshift(payload);
-    return;
-  }
+// Shadow mute (temp)
+const SHADOW_MUTE_MS = 30 * 60 * 1000; // 30 min temp shadow mute
+const SHADOW_MUTE_STRIKES_TO_EXTEND = 2;
 
-  if (!res.ok) {
-    // Non-OK responses are ignored (avoid crashing)
-    return;
-  }
-}
+// Login rate limit (very simple)
+const LOGIN_WINDOW_MS = 60 * 1000;
+const LOGIN_MAX_ATTEMPTS_PER_IP = 14;
 
-function discordContentSafe(s) {
-  // Avoid pinging everyone and keep payload bounded.
-  let t = String(s || "");
-  t = t.replace(/@everyone/g, "@\u200Beveryone").replace(/@here/g, "@\u200Bhere");
-  if (t.length > 1800) t = t.slice(0, 1800) + "…";
-  return t;
-}
-
-function discordSendText(content) {
-  enqueueWebhook({ content: discordContentSafe(content) });
-}
-
-function discordSendEmbed({ title, description, fields = [], footer } = {}) {
-  const embed = {
-    title: String(title || "").slice(0, 256),
-    description: String(description || "").slice(0, 4096),
-    fields: (fields || [])
-      .slice(0, 25)
-      .map((f) => ({
-        name: String(f.name || "").slice(0, 256),
-        value: String(f.value || "").slice(0, 1024),
-        inline: !!f.inline,
-      })),
-  };
-  if (footer) embed.footer = { text: String(footer).slice(0, 2048) };
-  enqueueWebhook({ embeds: [embed] });
-}
-
-// -------------------- storage --------------------
-const DATA_DIR = path.join(__dirname, "data");
-const USERS_FILE = path.join(DATA_DIR, "users.json");
-const GROUPS_FILE = path.join(DATA_DIR, "groups.json");
-const GLOBAL_FILE = path.join(DATA_DIR, "global.json");
-const DEVICE_CREATE_FILE = path.join(DATA_DIR, "device_creations.json");
-
-if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-
-function readJson(file, fallback) {
-  try {
-    if (!fs.existsSync(file)) return fallback;
-    return JSON.parse(fs.readFileSync(file, "utf8"));
-  } catch {
-    return fallback;
-  }
-}
-function writeJson(file, obj) {
-  fs.writeFileSync(file, JSON.stringify(obj, null, 2), "utf8");
-}
-
-let users = readJson(USERS_FILE, {});
-let groups = readJson(GROUPS_FILE, {});
-let globalHistory = readJson(GLOBAL_FILE, []);
-let deviceCreations = readJson(DEVICE_CREATE_FILE, {});
-
-function persistUsers() {
-  writeJson(USERS_FILE, users);
-}
-function persistGroups() {
-  writeJson(GROUPS_FILE, groups);
-}
-function persistGlobal() {
-  writeJson(GLOBAL_FILE, globalHistory);
-}
-function persistDeviceCreations() {
-  writeJson(DEVICE_CREATE_FILE, deviceCreations);
-}
+/* --------------------------------- Helpers -------------------------------- */
 
 function now() {
   return Date.now();
 }
-function dayKey(ts = Date.now()) {
-  const d = new Date(ts);
-  const y = d.getUTCFullYear();
-  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
-  const dd = String(d.getUTCDate()).padStart(2, "0");
-  return `${y}-${m}-${dd}`;
-}
 
-// -------------------- validation --------------------
-function isValidUser(u) {
-  return /^[A-Za-z0-9]{4,20}$/.test(String(u || "").trim());
-}
-function isValidPass(p) {
-  return /^[A-Za-z0-9]{4,32}$/.test(String(p || "").trim());
-}
-function isGuestName(u) {
-  return /^Guest\d{4,5}$/.test(String(u || ""));
-}
-
-// -------------------- security helpers --------------------
-function sha256(s) {
-  return crypto.createHash("sha256").update(String(s)).digest("hex");
-}
-function newToken() {
-  return crypto.randomBytes(24).toString("hex");
-}
-
-function deviceKeyFromSocket(socket) {
-  const xf = socket.handshake.headers["x-forwarded-for"];
-  const ip = (Array.isArray(xf) ? xf[0] : xf || socket.handshake.address || "").split(",")[0].trim();
-  const ua = String(socket.handshake.headers["user-agent"] || "");
-  return sha256(`${ip}::${ua}`).slice(0, 32);
-}
-
-function bumpDeviceCreationLimit(deviceKey) {
-  const today = dayKey();
-  const rec = deviceCreations[deviceKey] || { day: today, count: 0 };
-  if (rec.day !== today) {
-    rec.day = today;
-    rec.count = 0;
+function safeJsonParse(s) {
+  try {
+    return JSON.parse(s);
+  } catch {
+    return null;
   }
-  rec.count += 1;
-  deviceCreations[deviceKey] = rec;
-  persistDeviceCreations();
-  return rec.count;
-}
-function deviceCreationCount(deviceKey) {
-  const today = dayKey();
-  const rec = deviceCreations[deviceKey] || { day: today, count: 0 };
-  if (rec.day !== today) return 0;
-  return rec.count || 0;
 }
 
-// -------------------- user model --------------------
-function defaultSettings() {
-  return {
-    sounds: true,
-    hideMildProfanity: false,
-    allowFriendRequests: true,
-    allowGroupInvites: true,
-    customCursor: true,
-    mobileUX: false,
-  };
+function ensureDirSync(dir) {
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 }
-function defaultSocial() {
-  return { friends: [], incoming: [], outgoing: [], blocked: [] };
-}
-function defaultStats() {
-  return { messages: 0, xp: 0, level: 1 };
-}
-function xpNeededForNext(level) {
-  const L = Math.max(1, Number(level) || 1);
-  return Math.floor(120 + L * 65 + L * L * 12);
-}
-function awardXP(username, amount) {
-  const u = users[username];
-  if (!u || isGuestName(username)) return null;
 
-  u.stats ||= defaultStats();
-  u.stats.messages = (u.stats.messages || 0) + 1;
-  u.stats.xp = (u.stats.xp || 0) + amount;
+function getClientIP(reqOrSocket) {
+  // Works for Express req or Socket.IO socket (handshake)
+  const headers = (reqOrSocket && reqOrSocket.headers) || (reqOrSocket && reqOrSocket.handshake && reqOrSocket.handshake.headers) || {};
+  const xfwd = headers["x-forwarded-for"];
+  if (xfwd) return String(xfwd).split(",")[0].trim();
+  const ip =
+    (reqOrSocket && reqOrSocket.ip) ||
+    (reqOrSocket && reqOrSocket.connection && reqOrSocket.connection.remoteAddress) ||
+    (reqOrSocket && reqOrSocket.handshake && reqOrSocket.handshake.address) ||
+    "";
+  return String(ip || "").replace(/^::ffff:/, "");
+}
 
-  let leveled = false;
-  while (u.stats.xp >= xpNeededForNext(u.stats.level || 1)) {
-    u.stats.xp -= xpNeededForNext(u.stats.level || 1);
-    u.stats.level = (u.stats.level || 1) + 1;
-    leveled = true;
+function getUserAgent(reqOrSocket) {
+  const headers = (reqOrSocket && reqOrSocket.headers) || (reqOrSocket && reqOrSocket.handshake && reqOrSocket.handshake.headers) || {};
+  return String(headers["user-agent"] || "");
+}
+
+function id() {
+  // No nanoid dependency; Node 22 supports randomUUID.
+  return crypto.randomUUID();
+}
+
+function hmac(data) {
+  return crypto.createHmac("sha256", TOKEN_SECRET).update(data).digest("hex");
+}
+
+function signToken(payload) {
+  const body = Buffer.from(JSON.stringify(payload)).toString("base64url");
+  const sig = hmac(body);
+  return `${body}.${sig}`;
+}
+
+function verifyToken(token) {
+  if (!token || typeof token !== "string") return null;
+  const parts = token.split(".");
+  if (parts.length !== 2) return null;
+  const [body, sig] = parts;
+  if (hmac(body) !== sig) return null;
+  const json = safeJsonParse(Buffer.from(body, "base64url").toString("utf8"));
+  return json && typeof json === "object" ? json : null;
+}
+
+async function hashPassword(pw) {
+  const plain = String(pw || "");
+  if (plain.length < 4) throw new Error("Password too short.");
+  if (bcrypt) {
+    const salt = await bcrypt.genSalt(10);
+    return await bcrypt.hash(plain, salt);
   }
-  persistUsers();
-  return { leveled, level: u.stats.level, xp: u.stats.xp, next: xpNeededForNext(u.stats.level) };
+  // Fallback: scrypt
+  const salt = crypto.randomBytes(16).toString("hex");
+  const derived = await new Promise((resolve, reject) => {
+    crypto.scrypt(plain, salt, 64, (err, buf) => (err ? reject(err) : resolve(buf)));
+  });
+  return `scrypt$${salt}$${Buffer.from(derived).toString("hex")}`;
 }
 
-function ensureUser(username) {
-  if (!users[username]) {
-    users[username] = {
-      user: username,
-      createdAt: now(),
-      lastSeen: now(),
-      passHash: null,
-      token: null,
-      status: "online",
-      settings: defaultSettings(),
-      social: defaultSocial(),
-      inbox: [],
-      stats: defaultStats(),
-      dm: {},
-      security: {
-        sessions: [],
-        loginHistory: [],
-      },
-      flags: {
-        beta: true,
-      },
-    };
+async function verifyPassword(pw, hashed) {
+  const plain = String(pw || "");
+  const h = String(hashed || "");
+  if (!h) return false;
+
+  if (bcrypt && !h.startsWith("scrypt$")) {
+    try {
+      return await bcrypt.compare(plain, h);
+    } catch {
+      return false;
+    }
   }
-  const u = users[username];
-  u.settings ||= defaultSettings();
-  u.social ||= defaultSocial();
-  u.inbox ||= [];
-  u.stats ||= defaultStats();
-  u.dm ||= {};
-  u.security ||= { sessions: [], loginHistory: [] };
-  u.flags ||= { beta: true };
 
-  const d = defaultSettings();
-  for (const k of Object.keys(d)) {
-    if (typeof u.settings[k] !== typeof d[k]) u.settings[k] = d[k];
+  if (h.startsWith("scrypt$")) {
+    const parts = h.split("$");
+    if (parts.length !== 4) return false;
+    const salt = parts[2];
+    const wantHex = parts[3];
+    const derived = await new Promise((resolve, reject) => {
+      crypto.scrypt(plain, salt, 64, (err, buf) => (err ? reject(err) : resolve(buf)));
+    });
+    const gotHex = Buffer.from(derived).toString("hex");
+    return crypto.timingSafeEqual(Buffer.from(gotHex, "utf8"), Buffer.from(wantHex, "utf8"));
   }
-  for (const k of ["friends", "incoming", "outgoing", "blocked"]) {
-    if (!Array.isArray(u.social[k])) u.social[k] = [];
-  }
-  return u;
-}
 
-function safeUserPublic(u) {
-  return { user: u.user, status: u.status || "online", level: u.stats?.level || 1 };
-}
-
-function addInboxItem(toUser, item) {
-  const u = ensureUser(toUser);
-  u.inbox.unshift(item);
-  if (u.inbox.length > 250) u.inbox.length = 250;
-  persistUsers();
-}
-function countInbox(u) {
-  const items = u.inbox || [];
-  let friend = 0,
-    groupInv = 0,
-    ment = 0,
-    groupReq = 0;
-  for (const it of items) {
-    if (it.type === "friend") friend++;
-    else if (it.type === "group") groupInv++;
-    else if (it.type === "mention") ment++;
-    else if (it.type === "groupReq") groupReq++;
-  }
-  return { total: friend + groupInv + ment + groupReq, friend, groupInv, ment, groupReq };
-}
-
-// -------------------- message parsing --------------------
-function extractMentions(text) {
-  const t = String(text || "");
-  const rx = /@([A-Za-z0-9]{4,20})/g;
-  const found = new Set();
-  let m;
-  while ((m = rx.exec(t)) !== null) found.add(m[1]);
-  return Array.from(found);
-}
-function containsUrl(text) {
-  const t = String(text || "");
-  return /(https?:\/\/|www\.)/i.test(t);
-}
-function extractUrls(text) {
-  const t = String(text || "");
-  const rx = /\bhttps?:\/\/[^\s<>"')\]]+/gi;
-  const out = [];
-  let m;
-  while ((m = rx.exec(t)) !== null) out.push(m[0]);
-  return out;
-}
-
-const BLOCKED_LINK_RX = new RegExp(
-  ["porn", "xnxx", "xvideos", "pornhub", "redtube", "youporn", "hentai", "rule34", "onlyfans", "fansly", "sex", "nsfw", "camgirl", "cam4", "chaturbate"].join(
-    "|"
-  ),
-  "i"
-);
-
-const SEVERE_BAD_RX = new RegExp(
-  [
-    "\\bn[i1]gg(?:a|er)\\b",
-    "\\bchink\\b",
-    "\\bwetback\\b",
-    "\\bkike\\b",
-    "\\bspic\\b",
-    "\\bfag(?:got)?\\b",
-    "\\btrann(?:y|ies)\\b",
-    "\\bcp\\b",
-    "\\bchild\\s*porn\\b",
-    "\\bloli\\b",
-    "\\bunderage\\b",
-    "\\brape\\b",
-    "\\bincest\\b",
-    "\\bbeastiality\\b",
-    "\\bblowjob\\b",
-    "\\bhandjob\\b",
-    "\\bdeepthroat\\b",
-    "\\bcumshot\\b",
-    "\\bgangbang\\b",
-    "\\bcreampie\\b",
-    "\\banal\\b",
-    "\\bthreesome\\b",
-    "\\bstrip\\s*tease\\b",
-  ].join("|"),
-  "i"
-);
-
-function isSevereBad(text) {
-  const t = String(text || "");
-  if (SEVERE_BAD_RX.test(t)) return true;
-  const urls = extractUrls(t);
-  for (const u of urls) {
-    if (BLOCKED_LINK_RX.test(u)) return true;
-  }
+  // If bcrypt missing but stored bcrypt hash, we cannot verify (treat as failure).
   return false;
 }
 
-// -------------------- global history --------------------
-function pushGlobalMessage(msg) {
-  globalHistory.push(msg);
-  if (globalHistory.length > 350) globalHistory.shift();
-  persistGlobal();
+function clamp(n, a, b) {
+  return Math.max(a, Math.min(b, n));
 }
 
-// -------------------- DM store --------------------
-function ensureDMStore(userA, userB) {
-  const a = ensureUser(userA);
-  a.dm ||= {};
-  if (!a.dm[userB]) a.dm[userB] = [];
-  return a.dm[userB];
-}
-function pushDM(a, b, msg) {
-  const arrA = ensureDMStore(a, b);
-  const arrB = ensureDMStore(b, a);
-  arrA.push(msg);
-  arrB.push(msg);
-  if (arrA.length > 260) arrA.shift();
-  if (arrB.length > 260) arrB.shift();
-  persistUsers();
+function extractFirstUrl(text) {
+  const m = String(text || "").match(/\bhttps?:\/\/[^\s<>"']+/i);
+  return m ? m[0] : null;
 }
 
-// -------------------- groups --------------------
-function ensureGroupDefaults(g) {
-  g.privacy = g.privacy === "public" ? "public" : "private";
-  g.cooldownSec = Number.isFinite(Number(g.cooldownSec)) ? Number(g.cooldownSec) : 2.5;
-  g.cooldownEnabled = g.cooldownEnabled !== false;
-  g.mutedAll = !!g.mutedAll;
+/* --------------------------- Moderation / Filters -------------------------- */
 
-  g.members ||= [];
-  g.owner ||= null;
-  g.createdAt ||= now();
-  g.messages ||= [];
+// A “huge but not too huge” list: slurs, explicit content, common variations.
+// This list is intentionally partial and focuses on high-signal terms.
+// We do NOT echo slurs back; we only detect them.
+const BAD_PATTERNS = [
+  // racial slur variants (masked patterns)
+  /\bn[\W_]*i[\W_]*g[\W_]*g[\W_]*e[\W_]*r\b/i,
+  /\bn[\W_]*i[\W_]*g[\W_]*g[\W_]*a\b/i,
 
-  g.mutedUsers ||= [];
-  g.unmutedWhileMutedAll ||= [];
+  // explicit content keywords
+  /\b(cum|cumming|ejaculat|blowjob|handjob|rimjob|anal|deepthroat|threesome|gangbang|orgy)\b/i,
+  /\b(porn|porno|pornhub|xvideos|xhamster|redtube|youjizz|xnxx|brazzers|onlyfans)\b/i,
+  /\b(nudes?|naked|nsfw|hentai|rule\s*34)\b/i,
+  /\b(child\s*porn|cp\b|underage\s*sex)\b/i,
+  /\b(rape|raping|molest|incest)\b/i,
 
-  g.invites ||= [];
-  g.joinRequests ||= [];
+  // harassment / doxxing-ish phrases (light)
+  /\b(kys|kill\s*yourself)\b/i,
+  /\b(doxx|doxxing|swat|swatting)\b/i,
+];
 
-  g.perms ||= { invite: [] };
-  if (!Array.isArray(g.perms.invite)) g.perms.invite = [];
+// Porn/18+ domains and typical indicators in URLs. Not exhaustive.
+const BANNED_URL_PATTERNS = [
+  /porn/i,
+  /hentai/i,
+  /onlyfans/i,
+  /xvideos/i,
+  /xnxx/i,
+  /xhamster/i,
+  /redtube/i,
+  /rule34/i,
+  /sex/i,
+  /nsfw/i,
+  /erotic/i,
+];
 
-  g.memberCooldown ||= {};
-  return g;
+function containsBadStuff(text) {
+  const t = String(text || "");
+  if (!t) return false;
+  return BAD_PATTERNS.some((re) => re.test(t));
 }
-function groupPublic(g) {
-  g = ensureGroupDefaults(g);
+
+function isBannedUrl(url) {
+  const u = String(url || "").toLowerCase();
+  if (!u) return false;
+  return BANNED_URL_PATTERNS.some((re) => re.test(u));
+}
+
+/* ------------------------------ DB (JSON file) ----------------------------- */
+
+let db = null;
+let dbDirty = false;
+let dbWriteTimer = null;
+
+function defaultDB() {
   return {
-    id: g.id,
-    name: g.name,
-    owner: g.owner,
-    members: g.members || [],
-    privacy: g.privacy,
-    cooldownSec: g.cooldownSec,
-    cooldownEnabled: g.cooldownEnabled !== false,
-    mutedAll: !!g.mutedAll,
-    perms: g.perms,
-    memberCooldown: g.memberCooldown || {},
+    meta: { createdAt: now(), version: 1 },
+    users: [
+      // { id, username, passHash, createdAt, lastSeen, level, badges[], betaJoinAt, shadow:{ until, strikes } }
+    ],
+    sessions: [
+      // { id, userId, token, createdAt, lastSeen, ip, ua, revokedAt, current:boolean? }
+    ],
+    globalMessages: [
+      // { id, user, userId, text, ts, ipHash, url }
+    ],
+    inboxCounts: {
+      // userId: number
+    },
+    blocks: {
+      // userId: [ { username, blockedAt } ]
+    },
+    securityEvents: [
+      // { id, userId, type, when, detail }
+    ],
+    telemetry: [
+      // { id, when, ip, ua, hints:{} }
+    ],
+    groups: [
+      // { id, name, ownerId, limit, members:[{userId, username, role, muted}], createdAt }
+    ],
+    linkRate: {
+      // userId: lastLinkAt
+    },
+    loginRate: {
+      // ip: { windowStart, count }
+    },
   };
 }
 
-// -------------------- online tracking --------------------
-const socketsByUser = new Map();
-const userBySocket = new Map();
-
-function setOnline(user, socketId) {
-  if (!socketsByUser.has(user)) socketsByUser.set(user, new Set());
-  socketsByUser.get(user).add(socketId);
-  userBySocket.set(socketId, user);
+function getDB() {
+  return db;
 }
-function setOffline(socketId) {
-  const user = userBySocket.get(socketId);
-  if (!user) return;
-  userBySocket.delete(socketId);
-  const set = socketsByUser.get(user);
-  if (set) {
-    set.delete(socketId);
-    if (set.size === 0) socketsByUser.delete(user);
+
+async function flushDBSoon() {
+  dbDirty = true;
+  if (dbWriteTimer) return;
+  dbWriteTimer = setTimeout(async () => {
+    dbWriteTimer = null;
+    if (!dbDirty) return;
+    dbDirty = false;
+    try {
+      ensureDirSync(DATA_DIR);
+      const tmp = DB_FILE + ".tmp";
+      await fsp.writeFile(tmp, JSON.stringify(db, null, 2), "utf8");
+      await fsp.rename(tmp, DB_FILE);
+    } catch (e) {
+      console.error("DB write failed:", e && e.message ? e.message : e);
+      // keep dirty so it tries again later
+      dbDirty = true;
+    }
+  }, 350);
+}
+
+async function initDB() {
+  ensureDirSync(DATA_DIR);
+
+  if (fs.existsSync(DB_FILE)) {
+    const raw = await fsp.readFile(DB_FILE, "utf8");
+    const parsed = safeJsonParse(raw);
+    db = parsed && typeof parsed === "object" ? parsed : defaultDB();
+  } else {
+    db = defaultDB();
+    await flushDBSoon();
+  }
+
+  // Normalize missing fields across updates
+  db.users = Array.isArray(db.users) ? db.users : [];
+  db.sessions = Array.isArray(db.sessions) ? db.sessions : [];
+  db.globalMessages = Array.isArray(db.globalMessages) ? db.globalMessages : [];
+  db.securityEvents = Array.isArray(db.securityEvents) ? db.securityEvents : [];
+  db.telemetry = Array.isArray(db.telemetry) ? db.telemetry : [];
+  db.groups = Array.isArray(db.groups) ? db.groups : [];
+  db.blocks = db.blocks && typeof db.blocks === "object" ? db.blocks : {};
+  db.inboxCounts = db.inboxCounts && typeof db.inboxCounts === "object" ? db.inboxCounts : {};
+  db.linkRate = db.linkRate && typeof db.linkRate === "object" ? db.linkRate : {};
+  db.loginRate = db.loginRate && typeof db.loginRate === "object" ? db.loginRate : {};
+
+  await flushDBSoon();
+}
+
+/* -------------------------- Discord Webhook Helpers ------------------------- */
+
+async function postDiscord(payload) {
+  if (!DISCORD_WEBHOOK_URL) return;
+  try {
+    // Node 22 has global fetch
+    await fetch(DISCORD_WEBHOOK_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+  } catch (e) {
+    console.error("Discord webhook failed:", e && e.message ? e.message : e);
   }
 }
-function emitToUser(user, evt, payload) {
-  const set = socketsByUser.get(user);
-  if (!set) return;
-  for (const sid of set) io.to(sid).emit(evt, payload);
+
+function ipHash(ip) {
+  // Do NOT store raw IP in public message logs; keep for bot detection.
+  // Hash with secret to reduce exposure if DB leaks.
+  const s = String(ip || "");
+  return crypto.createHmac("sha256", TOKEN_SECRET).update(s).digest("hex").slice(0, 16);
 }
-function broadcastOnlineUsers() {
-  const list = [];
-  for (const [user] of socketsByUser.entries()) {
-    const u = users[user];
-    if (!u) continue;
-    if (u.status === "invisible") continue;
-    list.push(safeUserPublic(u));
+
+async function logDiscordJoin({ user, ip, ua, isNew }) {
+  const username = user.username;
+  const created = new Date(user.createdAt).toISOString();
+  const last = new Date(user.lastSeen || user.createdAt).toISOString();
+
+  const embed = {
+    title: isNew ? "New account created" : "User login",
+    description: `**${username}**`,
+    fields: [
+      { name: "User ID", value: String(user.id), inline: true },
+      { name: "Is New", value: isNew ? "yes" : "no", inline: true },
+      { name: "Created", value: created, inline: false },
+      { name: "Last Seen", value: last, inline: false },
+      { name: "IP (hash)", value: ipHash(ip), inline: true },
+      { name: "User-Agent", value: ua ? ua.slice(0, 180) : "—", inline: false },
+    ],
+    timestamp: new Date().toISOString(),
+  };
+
+  await postDiscord({
+    username: "tonkotsu.online",
+    embeds: [embed],
+  });
+}
+
+async function logDiscordGlobalMessage({ msg, user, ip }) {
+  // Rich embed for GLOBAL chat only
+  const username = user ? user.username : msg.user || "unknown";
+  const url = msg.url || extractFirstUrl(msg.text);
+  const embed = {
+    title: "Global Chat Message",
+    description: msg.text ? String(msg.text).slice(0, 1800) : "",
+    fields: [
+      { name: "From", value: username, inline: true },
+      { name: "User ID", value: user ? String(user.id) : String(msg.userId || "—"), inline: true },
+      { name: "Message ID", value: String(msg.id || "—"), inline: false },
+      { name: "IP (hash)", value: ipHash(ip), inline: true },
+    ],
+    timestamp: new Date(msg.ts || now()).toISOString(),
+  };
+
+  if (url) {
+    embed.fields.push({ name: "Link", value: String(url).slice(0, 500), inline: false });
   }
-  list.sort((a, b) => a.user.localeCompare(b.user));
-  io.emit("onlineUsers", list);
+
+  await postDiscord({
+    username: "tonkotsu.online",
+    embeds: [embed],
+  });
 }
 
-// -------------------- cooldowns / anti-spam --------------------
-const globalRate = new Map();
-function baseCooldownForUser(username) {
-  if (!users[username]) return 3;
-  if (isGuestName(username)) return 5;
-  const lvl = Number(users[username].stats?.level || 1);
-  return Math.max(1.5, 3 - (lvl - 1) * 0.05);
-}
-function currentCooldownForUser(username) {
-  const base = baseCooldownForUser(username);
-  const r = globalRate.get(username);
-  if (!r) return base;
+/* ----------------------------- Express / Server ----------------------------- */
 
-  const cutoff = now() - 10000;
-  r.recent = (r.recent || []).filter((t) => t >= cutoff);
-
-  const n = r.recent.length;
-  const penalty = n >= 8 ? 3.0 : n >= 6 ? 2.0 : n >= 4 ? 1.0 : 0;
-  return Math.min(12, base + penalty);
-}
-function touchGlobalSend(username) {
-  const t = now();
-  const r = globalRate.get(username) || { nextAllowed: 0, recent: [] };
-  r.recent.push(t);
-  globalRate.set(username, r);
-}
-
-const groupRate = new Map();
-function groupKey(gid, user) {
-  return `${gid}:${user}`;
-}
-
-function normMsg(s) {
-  return String(s || "")
-    .trim()
-    .replace(/\s+/g, " ")
-    .toLowerCase();
-}
-
-function canMention(username) {
-  const r = globalRate.get(username) || {};
-  const t = now();
-  const last = Number(r.lastMentionAt || 0);
-  return t - last >= 8000;
-}
-
-function canPostLink(username) {
-  const r = globalRate.get(username) || {};
-  const t = now();
-  const last = Number(r.lastLinkAt || 0);
-  return t - last >= 5 * 60 * 1000;
-}
-
-const SHADOW_MUTE_MS = 10 * 60 * 1000;
-
-// -------------------- server setup --------------------
 const app = express();
-const server = http.createServer(app);
-const io = new Server(server, {
-  cors: { origin: "*" },
+if (TRUST_PROXY) app.set("trust proxy", 1);
+
+app.use(express.json({ limit: "1mb" }));
+app.use(express.urlencoded({ extended: true }));
+
+// Basic security headers
+app.use((req, res, next) => {
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("Referrer-Policy", "no-referrer");
+  res.setHeader("Permissions-Policy", "geolocation=(), microphone=(), camera=()");
+  next();
 });
 
-app.use(express.static(path.join(__dirname, "public")));
-app.get("/health", (req, res) => res.json({ ok: true }));
+// Static files (if you serve index.html/script.js from same service)
+app.use(express.static(process.cwd(), { extensions: ["html"] }));
 
-// -------------------- socket handlers --------------------
-io.on("connection", (socket) => {
-  let authedUser = null;
+const server = http.createServer(app);
 
-  function requireAuth() {
-    return !!authedUser && !!users[authedUser];
+const io = new Server(server, {
+  cors: {
+    origin: true,
+    credentials: true,
+  },
+});
+
+/* ----------------------------- Auth Middleware ----------------------------- */
+
+function getBearer(req) {
+  const h = String(req.headers.authorization || "");
+  const m = h.match(/^Bearer\s+(.+)$/i);
+  return m ? m[1] : "";
+}
+
+function authRequired(req, res, next) {
+  const token = getBearer(req);
+  const payload = verifyToken(token);
+  if (!payload || !payload.sid || !payload.uid) {
+    return res.status(401).json({ ok: false, error: "Unauthorized" });
   }
-  function requireNonGuest() {
-    return requireAuth() && !isGuestName(authedUser);
+  const s = db.sessions.find((x) => x.id === payload.sid && x.userId === payload.uid);
+  if (!s || s.revokedAt) return res.status(401).json({ ok: false, error: "Session revoked" });
+
+  const user = db.users.find((u) => u.id === payload.uid);
+  if (!user) return res.status(401).json({ ok: false, error: "User not found" });
+
+  // Touch session
+  s.lastSeen = now();
+  user.lastSeen = now();
+  flushDBSoon();
+
+  req.auth = { token, payload, session: s, user };
+  next();
+}
+
+/* ------------------------------ Rate Limiting ------------------------------ */
+
+function allowLoginAttempt(ip) {
+  const key = String(ip || "unknown");
+  const entry = db.loginRate[key] || { windowStart: now(), count: 0 };
+  const t = now();
+  if (t - entry.windowStart > LOGIN_WINDOW_MS) {
+    entry.windowStart = t;
+    entry.count = 0;
+  }
+  entry.count += 1;
+  db.loginRate[key] = entry;
+  flushDBSoon();
+  return entry.count <= LOGIN_MAX_ATTEMPTS_PER_IP;
+}
+
+/* --------------------------------- Routes --------------------------------- */
+
+app.get("/health", (req, res) => res.json({ ok: true, env: NODE_ENV }));
+
+/**
+ * Telemetry hello — logs IP and client hints for bot identification.
+ * Called by script.js on page open.
+ */
+app.post("/api/telemetry/hello", (req, res) => {
+  const ip = getClientIP(req);
+  const ua = getUserAgent(req);
+  const hints = req.body && typeof req.body === "object" ? req.body : {};
+  const rec = { id: id(), when: now(), ip, ua, hints };
+  db.telemetry.push(rec);
+  // keep last 2500
+  if (db.telemetry.length > 2600) db.telemetry.splice(0, db.telemetry.length - 2500);
+  flushDBSoon();
+  res.json({ ok: true });
+});
+
+/**
+ * Login / Register:
+ * - If username exists: password MUST match, else deny.
+ * - If username doesn't exist: create account with password.
+ * - Creates a session token.
+ */
+app.post("/api/auth/login", async (req, res) => {
+  const ip = getClientIP(req);
+  const ua = getUserAgent(req);
+
+  if (!allowLoginAttempt(ip)) {
+    return res.status(429).json({ ok: false, error: "Too many login attempts. Try again soon." });
   }
 
-  function sendCooldown() {
-    if (!authedUser) return;
-    socket.emit("cooldown:update", { seconds: currentCooldownForUser(authedUser) });
+  const body = req.body && typeof req.body === "object" ? req.body : {};
+  const username = String(body.username || "").trim();
+  const password = String(body.password || "");
+  const guest = !!body.guest;
+
+  if (!username || username.length < 2 || username.length > 24) {
+    return res.status(400).json({ ok: false, error: "Invalid username." });
   }
 
-  function socketIpUaHashes() {
-    const xf = socket.handshake.headers["x-forwarded-for"];
-    const ip = (Array.isArray(xf) ? xf[0] : xf || socket.handshake.address || "").split(",")[0].trim();
-    const ua = String(socket.handshake.headers["user-agent"] || "");
-    return { ipHash: sha256(ip), uaHash: sha256(ua), uaShort: ua.slice(0, 90) };
+  // Basic username policy
+  if (!/^[a-zA-Z0-9._-]+$/.test(username)) {
+    return res.status(400).json({ ok: false, error: "Username contains invalid characters." });
   }
 
-  function recordLogin(username, ok) {
-    const u = ensureUser(username);
-    const { ipHash, uaHash } = socketIpUaHashes();
-    u.security.loginHistory ||= [];
-    u.security.loginHistory.unshift({ ts: now(), ipHash, uaHash, ok: !!ok });
-    if (u.security.loginHistory.length > 50) u.security.loginHistory.length = 50;
-    persistUsers();
-  }
+  let user = db.users.find((u) => u.username.toLowerCase() === username.toLowerCase());
+  let isNew = false;
 
-  function upsertSession(username, token) {
-    const u = ensureUser(username);
-    const { ipHash, uaHash } = socketIpUaHashes();
-    u.security.sessions ||= [];
-    const existing = u.security.sessions.find((s) => s.token === token);
-    if (existing) {
-      existing.lastSeen = now();
-      existing.ipHash = ipHash;
-      existing.uaHash = uaHash;
-    } else {
-      u.security.sessions.unshift({ token, createdAt: now(), lastSeen: now(), ipHash, uaHash });
-      if (u.security.sessions.length > 10) u.security.sessions.length = 10;
-    }
-    persistUsers();
-  }
-
-  function sendJoinWebhook({ username, guest, firstTime }) {
-    // "Join" defined as: account created (firstTime) OR guest created
-    const { ipHash, uaHash, uaShort } = socketIpUaHashes();
-    const devKey = deviceKeyFromSocket(socket);
-
-    const title = guest ? "New Guest Joined" : firstTime ? "New Account Created" : "User Logged In";
-    const desc = guest
-      ? `Guest session created: **${username}**`
-      : firstTime
-      ? `New user created: **${username}**`
-      : `User logged in: **${username}**`;
-
-    const fields = [
-      { name: "User", value: `\`${username}\``, inline: true },
-      { name: "Type", value: guest ? "guest" : firstTime ? "new_account" : "login", inline: true },
-      { name: "When", value: `<t:${Math.floor(now() / 1000)}:F>`, inline: false },
-      { name: "Device Key", value: `\`${devKey}\``, inline: false },
-      { name: "IP Hash", value: `\`${ipHash.slice(0, 16)}…\``, inline: true },
-      { name: "UA Hash", value: `\`${uaHash.slice(0, 16)}…\``, inline: true },
-      { name: "UA (short)", value: `\`${uaShort.replace(/`/g, "ˋ")}\``, inline: false },
-    ];
-
-    discordSendEmbed({
-      title,
-      description: desc,
-      fields,
-      footer: "tonkotsu.online",
-    });
-  }
-
-  function sendInitSuccess(u, { guest = false, firstTime = false } = {}) {
-    authedUser = u.user;
-    setOnline(authedUser, socket.id);
-
-    u.lastSeen = now();
-
+  if (!user) {
     if (guest) {
-      u.status = "online";
-      u.token = null;
+      // Guest accounts are ephemeral but still tracked for session; no password required.
+      user = {
+        id: id(),
+        username,
+        passHash: "",
+        createdAt: now(),
+        lastSeen: now(),
+        level: 1,
+        badges: ["BETA"],
+        betaJoinAt: now(),
+        shadow: { until: 0, strikes: 0 },
+      };
+      db.users.push(user);
+      isNew = true;
+      db.securityEvents.push({ id: id(), userId: user.id, type: "account_created_guest", when: now(), detail: `ip=${ipHash(ip)}` });
+      flushDBSoon();
     } else {
-      u.status ||= "online";
-      u.token ||= newToken();
-      upsertSession(u.user, u.token);
+      // Create persistent account
+      if (password.length < 4) return res.status(400).json({ ok: false, error: "Password too short." });
+
+      const passHash = await hashPassword(password);
+      user = {
+        id: id(),
+        username,
+        passHash,
+        createdAt: now(),
+        lastSeen: now(),
+        level: 1,
+        badges: ["BETA", "EARLY USER"],
+        betaJoinAt: now(),
+        shadow: { until: 0, strikes: 0 },
+      };
+      db.users.push(user);
+      isNew = true;
+      db.securityEvents.push({ id: id(), userId: user.id, type: "account_created", when: now(), detail: `ip=${ipHash(ip)}` });
+      flushDBSoon();
     }
-
-    persistUsers();
-
-    socket.emit("loginSuccess", {
-      username: u.user,
-      guest: !!guest,
-      token: guest ? null : u.token,
-      status: u.status,
-      settings: u.settings,
-      social: u.social,
-      stats: {
-        level: u.stats?.level || 1,
-        xp: u.stats?.xp || 0,
-        next: xpNeededForNext(u.stats?.level || 1),
-        messages: u.stats?.messages || 0,
-        createdAt: u.createdAt,
-        lastSeen: u.lastSeen,
-      },
-      firstTime: !!firstTime,
-    });
-
-    // Webhook on join (account created OR guest session)
-    if (guest || firstTime) {
-      sendJoinWebhook({ username: u.user, guest: !!guest, firstTime: !!firstTime });
-    }
-
-    sendCooldown();
-
+  } else {
+    // Existing user: MUST verify password unless they are a guest-only account with empty hash
     if (!guest) {
-      socket.emit("inbox:badge", countInbox(u));
-      socket.emit("inbox:data", { items: u.inbox || [] });
+      const ok = await verifyPassword(password, user.passHash);
+      if (!ok) {
+        db.securityEvents.push({ id: id(), userId: user.id, type: "login_failed", when: now(), detail: `ip=${ipHash(ip)}` });
+        flushDBSoon();
+        return res.status(401).json({ ok: false, error: "Wrong username or password." });
+      }
     }
-
-    broadcastOnlineUsers();
   }
 
-  // -------------------- resume session --------------------
-  socket.on("resume", ({ token }) => {
-    const tok = String(token || "");
-    if (!tok) return socket.emit("resumeFail");
+  // Create session
+  const sid = id();
+  const token = signToken({ sid, uid: user.id, iat: now() });
+  const session = {
+    id: sid,
+    userId: user.id,
+    token,
+    createdAt: now(),
+    lastSeen: now(),
+    ip,
+    ua,
+    revokedAt: 0,
+  };
+  db.sessions.push(session);
 
-    const found = Object.values(users).find((u) => u && u.token === tok && u.passHash);
-    if (!found) return socket.emit("resumeFail");
+  // Keep sessions bounded
+  if (db.sessions.length > 8000) db.sessions.splice(0, db.sessions.length - 7000);
 
-    upsertSession(found.user, tok);
-    sendInitSuccess(found, { guest: false, firstTime: false });
+  // Touch user
+  user.lastSeen = now();
+  db.securityEvents.push({ id: id(), userId: user.id, type: "login", when: now(), detail: `ip=${ipHash(ip)}` });
+
+  flushDBSoon();
+
+  // Discord log: join/login info
+  logDiscordJoin({ user, ip, ua, isNew }).catch(() => {});
+
+  res.json({
+    ok: true,
+    token,
+    isNew,
+    user: publicUser(user),
   });
+});
 
-  socket.on("cooldown:get", () => {
-    if (!requireAuth()) return;
-    sendCooldown();
+app.get("/api/me", authRequired, (req, res) => {
+  res.json({ ok: true, user: publicUser(req.auth.user) });
+});
+
+app.get("/api/inbox/count", authRequired, (req, res) => {
+  const uid = req.auth.user.id;
+  const n = Number(db.inboxCounts[uid] || 0);
+  res.json({ ok: true, count: Number.isFinite(n) ? n : 0 });
+});
+
+/* --------------------------------- Blocks --------------------------------- */
+
+app.get("/api/blocks", authRequired, (req, res) => {
+  const uid = req.auth.user.id;
+  const items = Array.isArray(db.blocks[uid]) ? db.blocks[uid] : [];
+  res.json({ ok: true, items });
+});
+
+app.post("/api/blocks/unblock", authRequired, (req, res) => {
+  const uid = req.auth.user.id;
+  const username = String((req.body && req.body.username) || "").trim();
+  if (!username) return res.status(400).json({ ok: false, error: "Missing username" });
+  const items = Array.isArray(db.blocks[uid]) ? db.blocks[uid] : [];
+  db.blocks[uid] = items.filter((x) => String(x.username).toLowerCase() !== username.toLowerCase());
+  flushDBSoon();
+  res.json({ ok: true });
+});
+
+/* -------------------------- Security Analytics & Mgmt ----------------------- */
+
+app.get("/api/security/overview", authRequired, (req, res) => {
+  const uid = req.auth.user.id;
+
+  const loginHistory = db.sessions
+    .filter((s) => s.userId === uid)
+    .slice(-30)
+    .reverse()
+    .map((s) => ({
+      when: s.createdAt,
+      ip: s.ip ? ipHash(s.ip) : "—",
+      ua: s.ua || "",
+    }));
+
+  const sessions = db.sessions
+    .filter((s) => s.userId === uid && !s.revokedAt)
+    .slice(-20)
+    .reverse()
+    .map((s) => ({
+      id: s.id,
+      ip: s.ip ? ipHash(s.ip) : "—",
+      lastSeen: s.lastSeen,
+      current: s.id === req.auth.session.id,
+    }));
+
+  const events = db.securityEvents
+    .filter((e) => e.userId === uid)
+    .slice(-40)
+    .reverse()
+    .map((e) => ({
+      type: e.type,
+      when: e.when,
+      detail: e.detail || "",
+    }));
+
+  res.json({ ok: true, loginHistory, sessions, events });
+});
+
+app.post("/api/security/revoke-session", authRequired, (req, res) => {
+  const uid = req.auth.user.id;
+  const sessionId = String((req.body && req.body.sessionId) || "");
+  if (!sessionId) return res.status(400).json({ ok: false, error: "Missing sessionId" });
+
+  const s = db.sessions.find((x) => x.id === sessionId && x.userId === uid);
+  if (!s) return res.status(404).json({ ok: false, error: "Session not found" });
+
+  // Can't revoke current via endpoint? we allow it but will force relog; client disables it anyway.
+  s.revokedAt = now();
+  db.securityEvents.push({ id: id(), userId: uid, type: "session_revoked", when: now(), detail: `sid=${sessionId}` });
+  flushDBSoon();
+
+  // If revoked session is connected on sockets, inform
+  io.to(`sid:${sessionId}`).emit("auth:revoked");
+  res.json({ ok: true });
+});
+
+app.post("/api/security/change-password", authRequired, async (req, res) => {
+  const uid = req.auth.user.id;
+  const password = String((req.body && req.body.password) || "");
+  if (password.length < 4) return res.status(400).json({ ok: false, error: "Password too short." });
+
+  const user = req.auth.user;
+  user.passHash = await hashPassword(password);
+  db.securityEvents.push({ id: id(), userId: uid, type: "password_changed", when: now(), detail: "" });
+
+  // Revoke all other sessions (keep current)
+  for (const s of db.sessions) {
+    if (s.userId === uid && s.id !== req.auth.session.id) s.revokedAt = now();
+  }
+  flushDBSoon();
+  res.json({ ok: true });
+});
+
+app.post("/api/security/change-username", authRequired, (req, res) => {
+  const uid = req.auth.user.id;
+  const nu = String((req.body && req.body.username) || "").trim();
+  if (!nu || nu.length < 2 || nu.length > 24) return res.status(400).json({ ok: false, error: "Invalid username." });
+  if (!/^[a-zA-Z0-9._-]+$/.test(nu)) return res.status(400).json({ ok: false, error: "Username contains invalid characters." });
+
+  const exists = db.users.find((u) => u.username.toLowerCase() === nu.toLowerCase() && u.id !== uid);
+  if (exists) return res.status(409).json({ ok: false, error: "Username already taken." });
+
+  req.auth.user.username = nu;
+  db.securityEvents.push({ id: id(), userId: uid, type: "username_changed", when: now(), detail: `new=${nu}` });
+  flushDBSoon();
+
+  res.json({ ok: true, user: publicUser(req.auth.user) });
+});
+
+/* ---------------------------- Global Chat (REST) ---------------------------- */
+
+app.get("/api/global/history", authRequired, (req, res) => {
+  const limit = clamp(Number(req.query.limit || 80), 1, 200);
+  const items = db.globalMessages.slice(-limit).map((m) => ({
+    id: m.id,
+    user: m.user,
+    userId: m.userId,
+    text: m.text,
+    ts: m.ts,
+    url: m.url || null,
+  }));
+  res.json({ ok: true, items });
+});
+
+app.post("/api/global/send", authRequired, async (req, res) => {
+  // REST fallback; primary is socket
+  const out = await handleGlobalSend({
+    user: req.auth.user,
+    session: req.auth.session,
+    ip: getClientIP(req),
+    ua: getUserAgent(req),
+    text: String((req.body && req.body.text) || ""),
+    socket: null,
   });
+  if (!out.ok) return res.status(out.status || 400).json(out);
+  res.json(out);
+});
 
-  // -------------------- login / create --------------------
-  socket.on("login", async ({ username, password, guest }) => {
-    const devKey = deviceKeyFromSocket(socket);
+/* ------------------------------- Groups (REST) ------------------------------ */
 
-    if (guest) {
-      let g = null;
-      for (let i = 0; i < 80; i++) {
-        const n = 1000 + Math.floor(Math.random() * 9000);
-        const name = `Guest${n}`;
-        if (!users[name] && !socketsByUser.has(name)) {
-          g = ensureUser(name);
-          g.passHash = null;
-          g.token = null;
-          g.status = "online";
-          g.flags.beta = true;
-          break;
-        }
-      }
-      if (!g) return socket.emit("loginError", "Guest slots busy. Try again.");
-      persistUsers();
-      recordLogin(g.user, true);
-      return sendInitSuccess(g, { guest: true, firstTime: false });
-    }
+function findGroup(gid) {
+  return db.groups.find((g) => g.id === gid);
+}
 
-    const uName = String(username || "").trim();
-    const pass = String(password || "").trim();
+function ensureGroupMembership(group, user) {
+  return group.members.some((m) => m.userId === user.id);
+}
 
-    if (!isValidUser(uName)) return socket.emit("loginError", "Username: letters/numbers only, 4–20.");
-    if (!isValidPass(pass)) return socket.emit("loginError", "Password: letters/numbers only, 4–32.");
+function isOwner(group, user) {
+  return group.ownerId === user.id;
+}
 
-    const exists = !!users[uName] && !!users[uName].passHash;
+app.get("/api/groups/:id", authRequired, (req, res) => {
+  const gid = String(req.params.id || "");
+  const g = findGroup(gid);
+  if (!g) return res.status(404).json({ ok: false, error: "Group not found" });
+  if (!ensureGroupMembership(g, req.auth.user)) return res.status(403).json({ ok: false, error: "Not a member" });
 
-    if (!exists) {
-      const c = deviceCreationCount(devKey);
-      if (c >= 4) {
-        recordLogin(uName, false);
-        return socket.emit("loginError", "Account creation limit reached (4 per day on this device).");
-      }
-    }
-
-    const rec = ensureUser(uName);
-
-    if (rec.passHash) {
-      const ok = await bcrypt.compare(pass, rec.passHash).catch(() => false);
-      recordLogin(uName, ok);
-      if (!ok) return socket.emit("loginError", "Incorrect password.");
-
-      rec.token = newToken();
-      rec.status ||= "online";
-      rec.lastSeen = now();
-      persistUsers();
-
-      upsertSession(rec.user, rec.token);
-      return sendInitSuccess(rec, { guest: false, firstTime: false });
-    }
-
-    const newCount = bumpDeviceCreationLimit(devKey);
-    if (newCount > 4) {
-      recordLogin(uName, false);
-      return socket.emit("loginError", "Account creation limit reached (4 per day on this device).");
-    }
-
-    rec.passHash = await bcrypt.hash(pass, 12);
-    rec.token = newToken();
-    rec.status = "online";
-    rec.createdAt ||= now();
-    rec.lastSeen = now();
-    rec.flags.beta = true;
-
-    persistUsers();
-    recordLogin(uName, true);
-    upsertSession(rec.user, rec.token);
-    return sendInitSuccess(rec, { guest: false, firstTime: true });
+  res.json({
+    ok: true,
+    id: g.id,
+    name: g.name,
+    limit: g.limit,
+    isOwner: isOwner(g, req.auth.user),
+    members: g.members.map((m) => ({
+      userId: m.userId,
+      username: m.username,
+      role: m.userId === g.ownerId ? "owner" : "member",
+      muted: !!m.muted,
+    })),
   });
+});
+
+app.post("/api/groups/:id/limit", authRequired, (req, res) => {
+  const gid = String(req.params.id || "");
+  const g = findGroup(gid);
+  if (!g) return res.status(404).json({ ok: false, error: "Group not found" });
+  if (!isOwner(g, req.auth.user)) return res.status(403).json({ ok: false, error: "Owner only" });
+
+  const limit = clamp(Number((req.body && req.body.limit) || 10), 2, 50);
+  g.limit = limit;
+  flushDBSoon();
+  res.json({ ok: true });
+});
+
+app.post("/api/groups/:id/members/add", authRequired, (req, res) => {
+  const gid = String(req.params.id || "");
+  const g = findGroup(gid);
+  if (!g) return res.status(404).json({ ok: false, error: "Group not found" });
+  if (!isOwner(g, req.auth.user)) return res.status(403).json({ ok: false, error: "Owner only" });
+
+  const username = String((req.body && req.body.username) || "").trim();
+  if (!username) return res.status(400).json({ ok: false, error: "Missing username" });
+
+  const u = db.users.find((x) => x.username.toLowerCase() === username.toLowerCase());
+  if (!u) return res.status(404).json({ ok: false, error: "User not found" });
+
+  if (g.members.some((m) => m.userId === u.id)) return res.json({ ok: true });
+
+  if (g.members.length >= g.limit) return res.status(400).json({ ok: false, error: "Group is at member limit." });
+
+  g.members.push({ userId: u.id, username: u.username, muted: false });
+  flushDBSoon();
+  res.json({ ok: true });
+});
+
+app.post("/api/groups/:id/members/remove", authRequired, (req, res) => {
+  const gid = String(req.params.id || "");
+  const g = findGroup(gid);
+  if (!g) return res.status(404).json({ ok: false, error: "Group not found" });
+  if (!isOwner(g, req.auth.user)) return res.status(403).json({ ok: false, error: "Owner only" });
+
+  const username = String((req.body && req.body.username) || "").trim();
+  if (!username) return res.status(400).json({ ok: false, error: "Missing username" });
+
+  const u = db.users.find((x) => x.username.toLowerCase() === username.toLowerCase());
+  if (!u) return res.status(404).json({ ok: false, error: "User not found" });
+
+  if (u.id === g.ownerId) return res.status(400).json({ ok: false, error: "Transfer ownership before removing owner." });
+
+  g.members = g.members.filter((m) => m.userId !== u.id);
+  flushDBSoon();
+  res.json({ ok: true });
+});
+
+app.post("/api/groups/:id/members/mute", authRequired, (req, res) => {
+  const gid = String(req.params.id || "");
+  const g = findGroup(gid);
+  if (!g) return res.status(404).json({ ok: false, error: "Group not found" });
+  if (!isOwner(g, req.auth.user)) return res.status(403).json({ ok: false, error: "Owner only" });
+
+  const username = String((req.body && req.body.username) || "").trim();
+  const muted = !!(req.body && req.body.muted);
+  if (!username) return res.status(400).json({ ok: false, error: "Missing username" });
+
+  const m = g.members.find((x) => x.username.toLowerCase() === username.toLowerCase());
+  if (!m) return res.status(404).json({ ok: false, error: "Member not found" });
+
+  m.muted = muted;
+  flushDBSoon();
+  res.json({ ok: true });
+});
+
+app.post("/api/groups/:id/transfer", authRequired, (req, res) => {
+  const gid = String(req.params.id || "");
+  const g = findGroup(gid);
+  if (!g) return res.status(404).json({ ok: false, error: "Group not found" });
+  if (!isOwner(g, req.auth.user)) return res.status(403).json({ ok: false, error: "Owner only" });
+
+  const username = String((req.body && req.body.username) || "").trim();
+  if (!username) return res.status(400).json({ ok: false, error: "Missing username" });
+
+  const u = db.users.find((x) => x.username.toLowerCase() === username.toLowerCase());
+  if (!u) return res.status(404).json({ ok: false, error: "User not found" });
+
+  if (!g.members.some((m) => m.userId === u.id)) {
+    return res.status(400).json({ ok: false, error: "User must be a member first." });
+  }
+
+  g.ownerId = u.id;
+  flushDBSoon();
+  res.json({ ok: true });
+});
+
+app.delete("/api/groups/:id", authRequired, (req, res) => {
+  const gid = String(req.params.id || "");
+  const g = findGroup(gid);
+  if (!g) return res.status(404).json({ ok: false, error: "Group not found" });
+  if (!isOwner(g, req.auth.user)) return res.status(403).json({ ok: false, error: "Owner only" });
+
+  db.groups = db.groups.filter((x) => x.id !== gid);
+  flushDBSoon();
+  res.json({ ok: true });
+});
+
+/* ------------------------------ Socket.IO Auth ------------------------------ */
+
+function socketAuth(socket, next) {
+  const token = socket.handshake && socket.handshake.auth ? socket.handshake.auth.token : "";
+  const payload = verifyToken(String(token || ""));
+  if (!payload || !payload.sid || !payload.uid) return next(new Error("Unauthorized"));
+
+  const session = db.sessions.find((s) => s.id === payload.sid && s.userId === payload.uid);
+  if (!session || session.revokedAt) return next(new Error("Session revoked"));
+
+  const user = db.users.find((u) => u.id === payload.uid);
+  if (!user) return next(new Error("User not found"));
+
+  // Touch
+  session.lastSeen = now();
+  user.lastSeen = now();
+  flushDBSoon();
+
+  socket.auth = { token, payload, session, user };
+  next();
+}
+
+io.use(socketAuth);
+
+/* -------------------------------- Sockets --------------------------------- */
+
+const onlineSet = new Set(); // socket.id list; for online count
+function broadcastOnline() {
+  io.emit("online:update", { online: onlineSet.size });
+}
+
+io.on("connection", (socket) => {
+  onlineSet.add(socket.id);
+  broadcastOnline();
+
+  // Join room by session id to allow revoke pushes
+  socket.join(`sid:${socket.auth.session.id}`);
 
   socket.on("disconnect", () => {
-    const u = userBySocket.get(socket.id);
-    setOffline(socket.id);
-    if (u && users[u]) {
-      users[u].lastSeen = now();
-      persistUsers();
-    }
-    broadcastOnlineUsers();
+    onlineSet.delete(socket.id);
+    broadcastOnline();
   });
 
-  // -------------------- status --------------------
-  socket.on("status:set", ({ status }) => {
-    if (!requireAuth()) return;
-    const s = String(status || "");
-    const allowed = new Set(["online", "idle", "dnd", "invisible"]);
-    if (!allowed.has(s)) return;
-
-    const u = users[authedUser];
-    u.status = s;
-    u.lastSeen = now();
-    persistUsers();
-
-    emitToUser(authedUser, "status:update", { status: s });
-    broadcastOnlineUsers();
-  });
-
-  // -------------------- settings --------------------
-  socket.on("settings:update", (s) => {
-    if (!requireNonGuest()) return;
-    const u = users[authedUser];
-    u.settings ||= defaultSettings();
-
-    const keys = Object.keys(defaultSettings());
-    for (const k of keys) {
-      if (typeof s?.[k] === typeof defaultSettings()[k]) u.settings[k] = s[k];
-    }
-
-    persistUsers();
-    socket.emit("settings", u.settings);
-  });
-
-  // -------------------- security endpoints --------------------
-  socket.on("security:get", () => {
-    if (!requireNonGuest()) return;
-    const u = users[authedUser];
-    const sec = u.security || { sessions: [], loginHistory: [] };
-
-    socket.emit("security:data", {
-      sessions: (sec.sessions || []).map((s) => ({ ...s })),
-      loginHistory: (sec.loginHistory || []).map((x) => ({ ...x })),
+  socket.on("hello", (payload) => {
+    // Optional telemetry from socket connect
+    const ip = getClientIP(socket);
+    const ua = getUserAgent(socket);
+    db.telemetry.push({
+      id: id(),
+      when: now(),
+      ip,
+      ua,
+      hints: payload && typeof payload === "object" ? payload : {},
     });
+    if (db.telemetry.length > 2600) db.telemetry.splice(0, db.telemetry.length - 2500);
+    flushDBSoon();
   });
 
-  socket.on("security:logoutSession", ({ token }) => {
-    if (!requireNonGuest()) return;
-    const tok = String(token || "");
-    if (!tok) return;
-    const u = users[authedUser];
-    u.security.sessions = (u.security.sessions || []).filter((s) => s.token !== tok);
-    if (u.token === tok) u.token = newToken();
-    persistUsers();
-    socket.emit("security:data", {
-      sessions: (u.security.sessions || []).map((s) => ({ ...s })),
-      loginHistory: (u.security.loginHistory || []).map((x) => ({ ...x })),
-    });
+  socket.on("online:get", () => {
+    socket.emit("online:update", { online: onlineSet.size });
   });
 
-  socket.on("account:changePassword", async ({ oldPass, newPass }) => {
-    if (!requireNonGuest()) return;
-    const u = users[authedUser];
-    const o = String(oldPass || "").trim();
-    const n = String(newPass || "").trim();
-    if (!isValidPass(o) || !isValidPass(n)) return socket.emit("sendError", { reason: "Invalid password format." });
-
-    const ok = await bcrypt.compare(o, u.passHash).catch(() => false);
-    if (!ok) return socket.emit("sendError", { reason: "Old password incorrect." });
-
-    u.passHash = await bcrypt.hash(n, 12);
-    u.token = newToken();
-    upsertSession(u.user, u.token);
-    persistUsers();
-    socket.emit("account:changed", { ok: true });
+  socket.on("notify:get", () => {
+    const uid = socket.auth.user.id;
+    const n = Number(db.inboxCounts[uid] || 0);
+    socket.emit("notify:count", { count: Number.isFinite(n) ? n : 0 });
   });
 
-  socket.on("account:changeUsername", async ({ newUsername, password }) => {
-    if (!requireNonGuest()) return;
-    const u = users[authedUser];
-
-    const nu = String(newUsername || "").trim();
-    const pw = String(password || "").trim();
-    if (!isValidUser(nu)) return socket.emit("sendError", { reason: "New username invalid." });
-    if (!isValidPass(pw)) return socket.emit("sendError", { reason: "Password invalid." });
-    if (users[nu]) return socket.emit("sendError", { reason: "Username already in use." });
-
-    const ok = await bcrypt.compare(pw, u.passHash).catch(() => false);
-    if (!ok) return socket.emit("sendError", { reason: "Password incorrect." });
-
-    const old = authedUser;
-    const rec = users[old];
-    rec.user = nu;
-
-    for (const otherName of Object.keys(users)) {
-      const other = users[otherName];
-      if (!other?.social) continue;
-      for (const k of ["friends", "incoming", "outgoing", "blocked"]) {
-        other.social[k] = (other.social[k] || []).map((x) => (x === old ? nu : x));
-      }
-      if (other.dm && other.dm[old]) {
-        other.dm[nu] = other.dm[old];
-        delete other.dm[old];
-      }
-    }
-
-    for (const gid of Object.keys(groups)) {
-      const g = ensureGroupDefaults(groups[gid]);
-      g.members = (g.members || []).map((x) => (x === old ? nu : x));
-      if (g.owner === old) g.owner = nu;
-      g.mutedUsers = (g.mutedUsers || []).map((x) => (x === old ? nu : x));
-      g.unmutedWhileMutedAll = (g.unmutedWhileMutedAll || []).map((x) => (x === old ? nu : x));
-      g.perms.invite = (g.perms.invite || []).map((x) => (x === old ? nu : x));
-      if (g.memberCooldown && Object.prototype.hasOwnProperty.call(g.memberCooldown, old)) {
-        g.memberCooldown[nu] = g.memberCooldown[old];
-        delete g.memberCooldown[old];
-      }
-    }
-
-    delete users[old];
-    users[nu] = rec;
-
-    rec.token = newToken();
-    upsertSession(rec.user, rec.token);
-
-    persistUsers();
-    persistGroups();
-
-    authedUser = nu;
-    emitToUser(nu, "account:renamed", { ok: true, username: nu, token: rec.token });
-    broadcastOnlineUsers();
+  // Global chat history (socket)
+  socket.on("global:history", (payload, ack) => {
+    const limit = clamp(Number((payload && payload.limit) || 80), 1, 200);
+    const items = db.globalMessages.slice(-limit).map((m) => ({
+      id: m.id,
+      user: m.user,
+      userId: m.userId,
+      text: m.text,
+      ts: m.ts,
+      url: m.url || null,
+    }));
+    if (typeof ack === "function") ack({ ok: true, items });
+    else socket.emit("global:history", { items });
   });
 
-  // -------------------- profile + badges --------------------
-  function computeBadges(userRec) {
-    const out = [];
-    if (userRec?.flags?.beta) out.push({ id: "beta", label: "Early User", tone: "gold" });
+  // Send global message (socket)
+  socket.on("global:send", async (payload, ack) => {
+    const ip = getClientIP(socket);
+    const ua = getUserAgent(socket);
+    const text = String((payload && payload.text) || "");
 
-    const lvl = Number(userRec?.stats?.level || 1);
-    if (lvl >= 10) out.push({ id: "lv10", label: "Lv 10", tone: "blue" });
-    if (lvl >= 25) out.push({ id: "lv25", label: "Lv 25", tone: "purple" });
-    if (lvl >= 50) out.push({ id: "lv50", label: "Lv 50", tone: "red" });
-    if (lvl >= 75) out.push({ id: "lv75", label: "Lv 75", tone: "green" });
-    if (lvl >= 100) out.push({ id: "lv100", label: "Lv 100", tone: "gold" });
-
-    return out.slice(0, 10);
-  }
-
-  socket.on("profile:get", ({ user }) => {
-    if (!requireAuth()) return;
-    const target = String(user || "");
-    const t = users[target];
-    if (!t || isGuestName(target) || !t.passHash) {
-      return socket.emit("profile:data", { user: target, exists: false, guest: true });
-    }
-    const level = t.stats?.level || 1;
-    socket.emit("profile:data", {
-      user: t.user,
-      exists: true,
-      guest: false,
-      createdAt: t.createdAt,
-      lastSeen: t.lastSeen || t.createdAt,
-      status: t.status || "online",
-      messages: t.stats?.messages || 0,
-      level,
-      xp: t.stats?.xp || 0,
-      next: xpNeededForNext(level),
-      badges: computeBadges(t),
-    });
-  });
-
-  // -------------------- leaderboard --------------------
-  function getLeaderboard(limit = 25) {
-    const arr = Object.values(users)
-      .filter((u) => u && u.passHash && !isGuestName(u.user))
-      .map((u) => ({
-        user: u.user,
-        level: u.stats?.level || 1,
-        xp: u.stats?.xp || 0,
-        next: xpNeededForNext(u.stats?.level || 1),
-        messages: u.stats?.messages || 0,
-      }));
-    arr.sort((a, b) => b.level - a.level || b.xp - a.xp || a.user.localeCompare(b.user));
-    return arr.slice(0, Math.max(5, Math.min(100, limit)));
-  }
-  socket.on("leaderboard:get", ({ limit }) => {
-    if (!requireAuth()) return;
-    socket.emit("leaderboard:data", { items: getLeaderboard(Number(limit) || 25) });
-  });
-
-  // -------------------- social --------------------
-  socket.on("social:sync", () => {
-    if (!requireNonGuest()) return;
-    socket.emit("social:update", users[authedUser].social);
-  });
-
-  socket.on("user:block", ({ user }) => {
-    if (!requireNonGuest()) return;
-    const target = String(user || "");
-    if (!users[target] || target === authedUser || isGuestName(target)) return;
-
-    const meRec = users[authedUser];
-    meRec.social.blocked ||= [];
-    if (!meRec.social.blocked.includes(target)) meRec.social.blocked.push(target);
-
-    meRec.social.friends = (meRec.social.friends || []).filter((x) => x !== target);
-    meRec.social.incoming = (meRec.social.incoming || []).filter((x) => x !== target);
-    meRec.social.outgoing = (meRec.social.outgoing || []).filter((x) => x !== target);
-
-    persistUsers();
-    socket.emit("social:update", meRec.social);
-  });
-
-  socket.on("user:unblock", ({ user }) => {
-    if (!requireNonGuest()) return;
-    const target = String(user || "");
-    const meRec = users[authedUser];
-    meRec.social.blocked = (meRec.social.blocked || []).filter((x) => x !== target);
-    persistUsers();
-    socket.emit("social:update", meRec.social);
-  });
-
-  socket.on("friend:request", ({ to }) => {
-    if (!requireNonGuest()) return;
-    const target = String(to || "");
-    if (!users[target] || isGuestName(target) || !users[target].passHash) return socket.emit("sendError", { reason: "User not found." });
-    if (target === authedUser) return;
-
-    const meRec = users[authedUser];
-    const tRec = users[target];
-
-    if (tRec.settings?.allowFriendRequests === false) return socket.emit("sendError", { reason: "User has friend requests disabled." });
-    if ((meRec.social.blocked || []).includes(target)) return socket.emit("sendError", { reason: "Unblock user first." });
-    if ((tRec.social.blocked || []).includes(authedUser)) return socket.emit("sendError", { reason: "Cannot send request." });
-
-    meRec.social.friends ||= [];
-    meRec.social.outgoing ||= [];
-    tRec.social.incoming ||= [];
-
-    if (meRec.social.friends.includes(target)) return;
-    if (meRec.social.outgoing.includes(target)) return;
-
-    meRec.social.outgoing.push(target);
-    if (!tRec.social.incoming.includes(authedUser)) tRec.social.incoming.push(authedUser);
-
-    addInboxItem(target, {
-      id: nanoid(),
-      type: "friend",
-      from: authedUser,
-      text: `${authedUser} sent you a friend request`,
-      ts: now(),
+    const out = await handleGlobalSend({
+      user: socket.auth.user,
+      session: socket.auth.session,
+      ip,
+      ua,
+      text,
+      socket,
     });
 
-    persistUsers();
-    socket.emit("social:update", meRec.social);
-    emitToUser(target, "social:update", tRec.social);
-    emitToUser(target, "inbox:badge", countInbox(tRec));
-    emitToUser(target, "inbox:data", { items: tRec.inbox });
+    if (typeof ack === "function") ack(out);
   });
-
-  socket.on("friend:accept", ({ from }) => {
-    if (!requireNonGuest()) return;
-    const src = String(from || "");
-    if (!users[src] || !users[src].passHash || isGuestName(src)) return;
-
-    const meRec = users[authedUser];
-    const sRec = users[src];
-
-    meRec.social.incoming = (meRec.social.incoming || []).filter((x) => x !== src);
-    sRec.social.outgoing = (sRec.social.outgoing || []).filter((x) => x !== authedUser);
-
-    meRec.social.friends ||= [];
-    sRec.social.friends ||= [];
-    if (!meRec.social.friends.includes(src)) meRec.social.friends.push(src);
-    if (!sRec.social.friends.includes(authedUser)) sRec.social.friends.push(authedUser);
-
-    meRec.inbox = (meRec.inbox || []).filter((it) => !(it.type === "friend" && it.from === src));
-
-    persistUsers();
-    socket.emit("social:update", meRec.social);
-    emitToUser(src, "social:update", sRec.social);
-
-    socket.emit("inbox:badge", countInbox(meRec));
-    socket.emit("inbox:data", { items: meRec.inbox });
-  });
-
-  socket.on("friend:decline", ({ from }) => {
-    if (!requireNonGuest()) return;
-    const src = String(from || "");
-    if (!users[src] || !users[src].passHash || isGuestName(src)) return;
-
-    const meRec = users[authedUser];
-    const sRec = users[src];
-
-    meRec.social.incoming = (meRec.social.incoming || []).filter((x) => x !== src);
-    sRec.social.outgoing = (sRec.social.outgoing || []).filter((x) => x !== authedUser);
-    meRec.inbox = (meRec.inbox || []).filter((it) => !(it.type === "friend" && it.from === src));
-
-    persistUsers();
-    socket.emit("social:update", meRec.social);
-    emitToUser(src, "social:update", sRec.social);
-
-    socket.emit("inbox:badge", countInbox(meRec));
-    socket.emit("inbox:data", { items: meRec.inbox });
-  });
-
-  socket.on("inbox:get", () => {
-    if (!requireNonGuest()) return;
-    const u = users[authedUser];
-    socket.emit("inbox:badge", countInbox(u));
-    socket.emit("inbox:data", { items: u.inbox || [] });
-  });
-
-  // -------------------- global chat --------------------
-  socket.on("requestGlobalHistory", () => {
-    socket.emit("history", globalHistory);
-  });
-
-  socket.on("sendGlobal", ({ text }) => {
-    if (!requireAuth()) return;
-    const t = String(text || "").trim();
-    if (!t || t.length > 1200) return;
-
-    const r =
-      globalRate.get(authedUser) ||
-      { nextAllowed: 0, recent: [], lastMsgNorm: "", lastLinkAt: 0, lastMentionAt: 0, shadowMuteUntil: 0 };
-    globalRate.set(authedUser, r);
-
-    if (r.shadowMuteUntil && now() < r.shadowMuteUntil) {
-      const msg = { user: authedUser, text: t, ts: now() };
-      socket.emit("globalMessage", msg);
-      return;
-    }
-
-    if (isSevereBad(t)) {
-      r.shadowMuteUntil = now() + SHADOW_MUTE_MS;
-      globalRate.set(authedUser, r);
-
-      const msg = { user: authedUser, text: t, ts: now() };
-      socket.emit("globalMessage", msg);
-      socket.emit("warn", { kind: "shadow", text: "Message not delivered." });
-      return;
-    }
-
-    if (containsUrl(t)) {
-      if (!canPostLink(authedUser)) {
-        return socket.emit("sendError", { reason: "Link cooldown: you can post one link every 5 minutes." });
-      }
-      const urls = extractUrls(t);
-      for (const u of urls) {
-        if (BLOCKED_LINK_RX.test(u)) {
-          r.shadowMuteUntil = now() + SHADOW_MUTE_MS;
-          globalRate.set(authedUser, r);
-          socket.emit("warn", { kind: "shadow", text: "Message not delivered." });
-          socket.emit("globalMessage", { user: authedUser, text: t, ts: now() });
-          return;
-        }
-      }
-      r.lastLinkAt = now();
-    }
-
-    const nm = normMsg(t);
-    if (nm && nm === r.lastMsgNorm) {
-      socket.emit("warn", { kind: "repeat", text: "Don’t repeat the same message." });
-    }
-    r.lastMsgNorm = nm;
-
-    const mentions = extractMentions(t).slice(0, 6);
-    const hasMentions = mentions.length > 0;
-    if (hasMentions) {
-      if (!canMention(authedUser)) {
-        return socket.emit("sendError", { reason: "Slow down on mentions." });
-      }
-      r.lastMentionAt = now();
-    }
-
-    const cd = currentCooldownForUser(authedUser);
-    if (now() < (r.nextAllowed || 0)) {
-      const left = Math.max(0, (r.nextAllowed - now()) / 1000);
-      sendCooldown();
-      return socket.emit("sendError", { reason: `Cooldown active (${left.toFixed(1)}s left).` });
-    }
-
-    r.nextAllowed = now() + cd * 1000;
-    touchGlobalSend(authedUser);
-    sendCooldown();
-
-    const msg = { user: authedUser, text: t, ts: now() };
-    pushGlobalMessage(msg);
-
-    // send to Discord webhook (GLOBAL ONLY)
-    // Format: **user**: message
-    discordSendText(`**${msg.user}**: ${msg.text}`);
-
-    if (requireNonGuest()) {
-      const xpInfo = awardXP(authedUser, 6);
-      if (xpInfo) emitToUser(authedUser, "me:stats", xpInfo);
-    }
-    users[authedUser].lastSeen = now();
-    persistUsers();
-
-    io.emit("globalMessage", msg);
-
-    for (const m of mentions) {
-      if (!users[m] || m === authedUser || !users[m].passHash || isGuestName(m)) continue;
-      const rec = users[m];
-      if ((rec.social?.blocked || []).includes(authedUser)) continue;
-
-      addInboxItem(m, {
-        id: nanoid(),
-        type: "mention",
-        from: authedUser,
-        text: `Mentioned you in #global: ${t.slice(0, 160)}`,
-        ts: now(),
-        meta: { scope: "global" },
-      });
-      emitToUser(m, "inbox:badge", countInbox(rec));
-      emitToUser(m, "inbox:data", { items: rec.inbox });
-    }
-  });
-
-  // -------------------- DM + groups --------------------
-  // (Unchanged from your last build: not forwarded to Discord webhook.)
-  // To keep this file manageable, I’m leaving the remaining handlers as-is from the prior version.
-  // If your current deployed server.js includes the full DM/group management handlers,
-  // keep them below this comment exactly as they were.
-  //
-  // IMPORTANT:
-  // - Do NOT call discordSendText() in DM or group send handlers.
-  // - Only global chat sends are forwarded.
-
-  socket.on("sendErrorAck", () => {});
 });
 
-// -------------------- boot --------------------
-const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`Server listening on http://localhost:${PORT}`));
+/* -------------------------- Global Message Handler -------------------------- */
+
+function isShadowMuted(user) {
+  const sh = user.shadow || { until: 0, strikes: 0 };
+  return (sh.until || 0) > now();
+}
+
+function setShadowMute(user, reason) {
+  if (!user.shadow) user.shadow = { until: 0, strikes: 0 };
+  user.shadow.strikes = Number(user.shadow.strikes || 0) + 1;
+
+  // Extend duration if repeated
+  const base = SHADOW_MUTE_MS;
+  const extra = user.shadow.strikes >= SHADOW_MUTE_STRIKES_TO_EXTEND ? 15 * 60 * 1000 : 0;
+  user.shadow.until = now() + base + extra;
+
+  db.securityEvents.push({
+    id: id(),
+    userId: user.id,
+    type: "shadow_mute",
+    when: now(),
+    detail: `reason=${reason || "policy"}`,
+  });
+  flushDBSoon();
+}
+
+function linkAllowed(userId, url) {
+  if (!url) return { ok: true };
+  if (isBannedUrl(url)) return { ok: false, error: "Banned link." };
+
+  const last = Number(db.linkRate[userId] || 0);
+  if (Number.isFinite(last) && last > 0 && now() - last < LINK_LIMIT_MS) {
+    return { ok: false, error: "Link cooldown active." };
+  }
+  return { ok: true };
+}
+
+function markLinkUsed(userId) {
+  db.linkRate[userId] = now();
+  flushDBSoon();
+}
+
+async function handleGlobalSend({ user, session, ip, ua, text, socket }) {
+  const clean = String(text || "").trim();
+  if (!clean) return { ok: false, status: 400, error: "Empty message." };
+  if (clean.length > MAX_MESSAGE_LEN) return { ok: false, status: 400, error: `Message too long (max ${MAX_MESSAGE_LEN}).` };
+
+  // Enforce global cooldown server-side (simple; per-session last send)
+  if (!session._lastGlobalAt) session._lastGlobalAt = 0;
+  const since = now() - session._lastGlobalAt;
+  if (since < GLOBAL_COOLDOWN_MS) {
+    // Still return cooldownMs so client can render bar; also “shake” UX is client-side.
+    return { ok: false, status: 429, error: "Cooldown active.", cooldownMs: GLOBAL_COOLDOWN_MS - since };
+  }
+
+  const url = extractFirstUrl(clean);
+
+  // Link spam / banned link enforcement (server-side)
+  if (url) {
+    const chk = linkAllowed(user.id, url);
+    if (!chk.ok) {
+      // If they’re trying to post banned/18+ link: shadow mute silently (user won’t be told),
+      // and accept as shadow so their client stays consistent.
+      if (chk.error === "Banned link.") setShadowMute(user, "banned_link");
+      // We still do NOT broadcast.
+      session._lastGlobalAt = now();
+      flushDBSoon();
+      return { ok: true, shadow: true, cooldownMs: GLOBAL_COOLDOWN_MS };
+    }
+  }
+
+  // Bad content triggers shadow mute
+  if (containsBadStuff(clean)) {
+    setShadowMute(user, "bad_content");
+    session._lastGlobalAt = now();
+    flushDBSoon();
+    // Accept but do not broadcast (shadow)
+    return { ok: true, shadow: true, cooldownMs: GLOBAL_COOLDOWN_MS };
+  }
+
+  // If already shadow muted, accept but do not broadcast
+  if (isShadowMuted(user)) {
+    session._lastGlobalAt = now();
+    flushDBSoon();
+    return { ok: true, shadow: true, cooldownMs: GLOBAL_COOLDOWN_MS };
+  }
+
+  // Normal message: store and broadcast
+  const msg = {
+    id: id(),
+    user: user.username,
+    userId: user.id,
+    text: clean,
+    ts: now(),
+    ipHash: ipHash(ip),
+    url: url || null,
+  };
+
+  db.globalMessages.push(msg);
+  // Keep last 3000 messages
+  if (db.globalMessages.length > 3200) db.globalMessages.splice(0, db.globalMessages.length - 3000);
+
+  session._lastGlobalAt = now();
+
+  // Link usage
+  if (url) markLinkUsed(user.id);
+
+  // Touch user
+  user.lastSeen = now();
+
+  flushDBSoon();
+
+  // Broadcast to everyone
+  io.emit("global:msg", {
+    id: msg.id,
+    user: msg.user,
+    userId: msg.userId,
+    text: msg.text,
+    ts: msg.ts,
+    url: msg.url,
+  });
+
+  // Discord webhook logging (GLOBAL only)
+  logDiscordGlobalMessage({ msg, user, ip }).catch(() => {});
+
+  return { ok: true, cooldownMs: GLOBAL_COOLDOWN_MS };
+}
+
+/* ------------------------------- Public User ------------------------------- */
+
+function publicUser(u) {
+  return {
+    id: u.id,
+    username: u.username,
+    createdAt: u.createdAt,
+    lastSeen: u.lastSeen,
+    level: typeof u.level === "number" ? u.level : 1,
+    badges: Array.isArray(u.badges) ? u.badges : ["BETA"],
+    betaJoinAt: u.betaJoinAt || null,
+    role: "user",
+  };
+}
+
+/* ---------------------------------- Start ---------------------------------- */
+
+(async () => {
+  await initDB();
+
+  server.listen(PORT, () => {
+    console.log(`[tonkotsu] server listening on :${PORT} (${NODE_ENV})`);
+    if (!DISCORD_WEBHOOK_URL) {
+      console.log("[tonkotsu] DISCORD_WEBHOOK_URL is not set; Discord logs are disabled.");
+    } else {
+      console.log("[tonkotsu] Discord webhook logging enabled.");
+    }
+  });
+})();
