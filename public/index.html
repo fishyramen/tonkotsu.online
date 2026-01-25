@@ -1,1270 +1,1185 @@
-<!-- public/index.html -->
+<!-- public/index.html — Single-file compact black theme (NO styles.css)
+     Includes:
+     - Login (no inbox on login screen)
+     - Guest login works
+     - Post-login loading screen + skeleton loaders
+     - Custom cursor ON by default (bigger + dynamic)
+     - Tabs: Global, Messages (DMs + friends), Group Chats, What's New, Settings
+     - Global is default messaging
+     - Right-click message context menu (edit/delete within 1 minute, report)
+     - Report -> server webhook
+     - Room rules/info panel for Group Chats
+     - Badges + user card
+     - Status (no custom status)
+     - Accessibility + sound + cursor options + font size in Settings
+     - Read markers + jump to last read (global/dm/group)
+     - Typing indicators (global/dm/group)
+     - Invite links + owner permissions + member limit + cooldown + transfer ownership
+     - One-session-per-account: if revoked, shows modal and forces relogin
+
+     Requires: /public/script.js and server.js endpoints.
+-->
 <!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <meta name="theme-color" content="#000000" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>tonkotsu.online</title>
 
-  <!-- Socket.IO served by server/server.js -->
-  <script src="/socket.io/socket.io.js"></script>
-
   <style>
-    /* ================================
-       tonkotsu.online — Black Theme UI
-       (CSS embedded per your request)
-       ================================ */
-
     :root{
-      --bg:#000;
-      --panel:#070707;
-      --panel2:#0b0b0b;
-      --line:#151515;
-      --line2:#1c1c1c;
-
-      --txt:#f2f2f2;
-      --muted:#a8a8a8;
-      --soft:#cfcfcf;
-
-      --good:#1ee38a;
-      --warn:#ffd369;
-      --bad:#ff4d6d;
-
-      --shadow: 0 12px 40px rgba(0,0,0,.65);
-      --r: 16px;
-
-      --fs: 14px;
-      --fs2: 12px;
-
-      --cursorSize: 18px; /* bigger by default */
+      --bg:#090a0c;
+      --bg2:#0c0d10;
+      --panel:#0f1116;
+      --panel2:#121521;
+      --stroke:#1c2230;
+      --stroke2:#2a3142;
+      --text:#e8ebf3;
+      --muted:#9aa3b7;
+      --muted2:#727c93;
+      --accent:#8ea2ff;
+      --good:#58d69a;
+      --warn:#ffc857;
+      --bad:#ff5c7a;
+      --shadow: rgba(0,0,0,.55);
+      --radius:14px;
+      --radius2:18px;
+      --pad:12px;
+      --pad2:16px;
+      --font: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji","Segoe UI Emoji";
+      --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      --focus: 0 0 0 3px rgba(142,162,255,.22);
+      --blur: blur(10px);
+      --compactScale: 1;
     }
 
-    *{box-sizing:border-box}
-    html,body{height:100%}
+    *{ box-sizing:border-box; }
+    html, body{ height:100%; }
     body{
       margin:0;
-      background:radial-gradient(1200px 800px at 50% 20%, #0b0b0b 0%, #000 60%, #000 100%);
-      color:var(--txt);
-      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji","Segoe UI Emoji";
-      font-size:var(--fs);
+      font-family: var(--font);
+      background: radial-gradient(1200px 700px at 20% -10%, rgba(142,162,255,.18), transparent 55%),
+                  radial-gradient(900px 520px at 88% 8%, rgba(88,214,154,.10), transparent 60%),
+                  radial-gradient(1200px 700px at 45% 115%, rgba(255,92,122,.06), transparent 60%),
+                  linear-gradient(180deg, var(--bg), #07080a 60%, #050608);
+      color: var(--text);
       overflow:hidden;
-      cursor:none; /* custom cursor always on */
+      cursor:none; /* custom cursor ON by default; can be disabled in settings */
     }
 
-    a{color:inherit}
-    button, input{
-      font:inherit;
-      color:inherit;
-      background:transparent;
-      border:0;
-      outline:none;
+    /* Font scaling (settings) */
+    body[data-fontscale="0.9"]{ font-size: 14px; }
+    body[data-fontscale="1.0"]{ font-size: 15px; }
+    body[data-fontscale="1.1"]{ font-size: 16px; }
+    body[data-fontscale="1.2"]{ font-size: 17px; }
+    body[data-fontscale="1.3"]{ font-size: 18px; }
+
+    /* Reduced motion (accessibility) */
+    body[data-reducedmotion="1"] *{
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
     }
 
-    /* Custom cursor (dynamic, bigger, always enabled) */
-    #cursor{
-      position:fixed;
-      left:0; top:0;
-      width:var(--cursorSize);
-      height:var(--cursorSize);
-      border-radius:999px;
-      pointer-events:none;
-      z-index:999999;
-      transform:translate(-50%,-50%);
-      background:rgba(255,255,255,.95);
-      mix-blend-mode:difference;
-      box-shadow: 0 0 0 2px rgba(255,255,255,.12), 0 10px 30px rgba(0,0,0,.5);
-      transition: width .08s ease, height .08s ease, transform .05s linear;
-    }
-    #cursor.ring{
-      background:rgba(255,255,255,.0);
-      box-shadow: 0 0 0 2px rgba(255,255,255,.85), 0 0 0 8px rgba(255,255,255,.08);
-    }
-    #cursor.big{
-      width:26px; height:26px;
+    /* High contrast */
+    body[data-highcontrast="1"]{
+      --stroke:#2e3a52;
+      --stroke2:#3a4968;
+      --muted:#b2bbcf;
+      --muted2:#99a5c0;
     }
 
-    /* App shell */
-    .app{
+    /* Focus rings */
+    body[data-focusrings="0"] :focus{ outline:none !important; box-shadow:none !important; }
+    :focus{ outline:none; box-shadow: var(--focus); border-color: rgba(142,162,255,.45); }
+
+    /* Layout */
+    .root{
       height:100%;
-      display:grid;
-      grid-template-rows: 54px 1fr;
+      display:flex;
+      flex-direction:column;
     }
 
-    /* Top bar */
     .topbar{
-      height:54px;
       display:flex;
       align-items:center;
       justify-content:space-between;
-      padding:0 14px;
-      border-bottom:1px solid var(--line);
-      background:linear-gradient(180deg, rgba(15,15,15,.9), rgba(0,0,0,.55));
-      backdrop-filter: blur(10px);
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--stroke);
+      background: rgba(10,11,14,.62);
+      backdrop-filter: var(--blur);
+      -webkit-backdrop-filter: var(--blur);
     }
+
     .brand{
       display:flex;
       align-items:center;
       gap:10px;
-      user-select:none;
+      min-width:220px;
     }
+
     .logo{
-      width:28px; height:28px;
-      border-radius:10px;
-      background: linear-gradient(135deg, rgba(255,255,255,.9), rgba(255,255,255,.2));
-      box-shadow: 0 10px 30px rgba(0,0,0,.6);
+      width:36px;
+      height:36px;
+      border-radius: 12px;
+      background: linear-gradient(135deg, rgba(142,162,255,.9), rgba(255,92,122,.65));
+      box-shadow: 0 10px 30px rgba(142,162,255,.14), 0 10px 26px rgba(255,92,122,.08);
+      border: 1px solid rgba(255,255,255,.06);
+      position:relative;
+      overflow:hidden;
     }
-    .brand b{letter-spacing:.5px}
-    .statusRow{
+    .logo:before{
+      content:"";
+      position:absolute;
+      inset:-50%;
+      background: radial-gradient(circle at 30% 30%, rgba(255,255,255,.28), transparent 38%),
+                  radial-gradient(circle at 75% 70%, rgba(255,255,255,.12), transparent 40%);
+      transform: rotate(10deg);
+    }
+
+    .brand h1{
+      margin:0;
+      font-size: 14px;
+      letter-spacing: 0.4px;
+      font-weight: 700;
+      line-height: 1.05;
+    }
+    .brand .sub{
+      font-size: 11px;
+      color: var(--muted2);
+      letter-spacing: 0.2px;
+      margin-top:2px;
+    }
+
+    .top-actions{
       display:flex;
       align-items:center;
       gap:10px;
-      color:var(--muted);
-      font-size:var(--fs2);
     }
+
     .pill{
-      padding:6px 10px;
-      border:1px solid var(--line2);
-      border-radius:999px;
-      background:rgba(10,10,10,.6);
       display:flex;
       align-items:center;
       gap:8px;
+      padding: 8px 10px;
+      border-radius: 999px;
+      border: 1px solid var(--stroke);
+      background: rgba(15,17,22,.75);
+      box-shadow: 0 14px 30px rgba(0,0,0,.22);
+      font-size: 12px;
+      color: var(--muted);
+      white-space:nowrap;
     }
-    .dot{
-      width:8px; height:8px;
-      border-radius:99px;
-      background:var(--muted);
-      box-shadow: 0 0 0 4px rgba(255,255,255,.05);
-    }
-    .dot.good{background:var(--good)}
-    .dot.bad{background:var(--bad)}
-    .btn{
-      padding:8px 12px;
-      border-radius:12px;
-      border:1px solid var(--line2);
-      background:rgba(10,10,10,.55);
-      box-shadow: 0 8px 26px rgba(0,0,0,.45);
-      cursor:none;
-      user-select:none;
-      transition: transform .08s ease, border-color .1s ease, background .1s ease;
-    }
-    .btn:hover{transform:translateY(-1px); border-color:#2a2a2a; background:rgba(14,14,14,.75)}
-    .btn:active{transform:translateY(0px) scale(.99)}
-    .btn.danger{border-color:rgba(255,77,109,.35)}
-    .btn.small{padding:6px 10px; border-radius:10px; font-size:var(--fs2)}
-    .btn.ghost{background:rgba(0,0,0,.2); box-shadow:none}
 
-    /* Main area (3 columns) */
+    .dot{
+      width:8px;
+      height:8px;
+      border-radius:50%;
+      background: var(--good);
+      box-shadow: 0 0 0 3px rgba(88,214,154,.14);
+    }
+    .dot.idle{ background: var(--warn); box-shadow: 0 0 0 3px rgba(255,200,87,.14); }
+    .dot.dnd{ background: var(--bad); box-shadow: 0 0 0 3px rgba(255,92,122,.14); }
+    .dot.inv{ background: var(--muted2); box-shadow: 0 0 0 3px rgba(154,163,183,.10); }
+
+    .btn{
+      border:1px solid var(--stroke);
+      background: rgba(12,13,16,.85);
+      color: var(--text);
+      padding: 9px 12px;
+      border-radius: 12px;
+      font-size: 12px;
+      cursor: pointer;
+      transition: transform .08s ease, border-color .12s ease, background .12s ease, box-shadow .12s ease;
+      user-select:none;
+    }
+    .btn:hover{ border-color: rgba(142,162,255,.34); background: rgba(18,21,33,.88); }
+    .btn:active{ transform: translateY(1px); }
+    .btn.primary{
+      border-color: rgba(142,162,255,.38);
+      background: linear-gradient(180deg, rgba(142,162,255,.22), rgba(12,13,16,.85));
+    }
+    .btn.danger{
+      border-color: rgba(255,92,122,.4);
+      background: linear-gradient(180deg, rgba(255,92,122,.18), rgba(12,13,16,.85));
+    }
+    .btn.ghost{
+      background: transparent;
+      border-color: transparent;
+      color: var(--muted);
+    }
+    .btn.ghost:hover{
+      border-color: var(--stroke);
+      background: rgba(12,13,16,.55);
+      color: var(--text);
+    }
+
     .main{
-      height:100%;
+      flex:1;
       display:grid;
-      grid-template-columns: 320px 1fr 340px;
-      gap:10px;
-      padding:10px;
+      grid-template-columns: 250px 1fr 290px;
+      gap: 10px;
+      padding: 10px;
+      overflow:hidden;
     }
 
     .panel{
-      background:linear-gradient(180deg, rgba(12,12,12,.9), rgba(0,0,0,.75));
-      border:1px solid var(--line);
-      border-radius:var(--r);
-      box-shadow: var(--shadow);
+      border: 1px solid var(--stroke);
+      background: rgba(12,13,16,.70);
+      backdrop-filter: var(--blur);
+      -webkit-backdrop-filter: var(--blur);
+      border-radius: var(--radius2);
       overflow:hidden;
-      min-height:0;
+      box-shadow: 0 18px 36px rgba(0,0,0,.22);
+      min-height: 0;
+    }
+
+    /* Sidebar */
+    .sidebar{
       display:flex;
       flex-direction:column;
+      min-height:0;
     }
-    .panelHeader{
-      padding:12px 12px 10px;
-      border-bottom:1px solid var(--line);
-      display:flex;
-      align-items:center;
-      justify-content:space-between;
-      background:rgba(0,0,0,.35);
-    }
-    .panelHeader h3{
-      margin:0;
-      font-size:13px;
-      letter-spacing:.7px;
-      text-transform:uppercase;
-      color:var(--soft);
-    }
-
-    /* Left: rooms */
-    .roomsList{
-      padding:10px;
-      overflow:auto;
-    }
-    .roomsList::-webkit-scrollbar{width:10px}
-    .roomsList::-webkit-scrollbar-thumb{background:#141414; border-radius:10px}
-    .roomsList::-webkit-scrollbar-track{background:#050505}
-
-    .roomItem{
-      padding:10px;
-      border:1px solid var(--line);
-      background:rgba(6,6,6,.75);
-      border-radius:14px;
-      margin-bottom:10px;
-      cursor:none;
-      transition: transform .08s ease, border-color .1s ease, background .1s ease;
-    }
-    .roomItem:hover{transform:translateY(-1px); border-color:#262626; background:rgba(10,10,10,.85)}
-    .roomItem.active{border-color:rgba(255,255,255,.25); background:rgba(14,14,14,.9)}
-    .roomTop{
+    .side-head{
+      padding: 12px 12px 10px;
+      border-bottom: 1px solid var(--stroke);
       display:flex;
       align-items:center;
       justify-content:space-between;
       gap:10px;
+      background: rgba(10,11,14,.42);
     }
-    .roomName{
-      font-weight:700;
+    .side-head .label{
+      font-weight: 700;
+      letter-spacing: .3px;
+      font-size: 12px;
+      color: var(--text);
+    }
+    .side-scroll{
+      overflow:auto;
+      padding: 10px;
+      display:flex;
+      flex-direction:column;
+      gap:8px;
+      min-height:0;
+    }
+
+    .nav-item{
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:10px;
+      padding: 10px 10px;
+      border-radius: 14px;
+      border: 1px solid rgba(0,0,0,0);
+      background: rgba(15,17,22,.35);
+      color: var(--muted);
+      cursor:pointer;
+      transition: background .12s ease, border-color .12s ease, transform .08s ease;
+      user-select:none;
+    }
+    .nav-item:hover{ background: rgba(18,21,33,.45); border-color: rgba(142,162,255,.14); }
+    .nav-item:active{ transform: translateY(1px); }
+    .nav-item.active{
+      background: linear-gradient(180deg, rgba(142,162,255,.16), rgba(15,17,22,.35));
+      border-color: rgba(142,162,255,.20);
+      color: var(--text);
+    }
+    .nav-left{
+      display:flex;
+      gap:10px;
+      align-items:center;
+      min-width:0;
+    }
+    .ico{
+      width: 24px;
+      height: 24px;
+      border-radius: 10px;
+      border: 1px solid var(--stroke);
+      background: rgba(18,21,33,.55);
+      display:grid;
+      place-items:center;
+      color: var(--muted);
+      flex: 0 0 auto;
+      font-size: 12px;
+    }
+    .nav-title{
+      font-size: 12px;
+      font-weight: 700;
       letter-spacing:.2px;
+      white-space:nowrap;
+      overflow:hidden;
+      text-overflow:ellipsis;
     }
-    .roomMeta{
-      margin-top:6px;
-      color:var(--muted);
-      font-size:var(--fs2);
-      line-height:1.35;
+    .badge{
+      font-size: 10px;
+      padding: 3px 8px;
+      border-radius: 999px;
+      border: 1px solid var(--stroke);
+      color: var(--muted);
+      background: rgba(12,13,16,.55);
     }
-    .tag{
-      padding:4px 8px;
-      border:1px solid var(--line2);
-      border-radius:999px;
-      color:var(--muted);
-      font-size:var(--fs2);
-      background:rgba(0,0,0,.35);
+    .badge.hot{
+      border-color: rgba(255,200,87,.35);
+      color: rgba(255,200,87,.95);
+      background: rgba(255,200,87,.10);
+    }
+    .badge.new{
+      border-color: rgba(88,214,154,.35);
+      color: rgba(88,214,154,.95);
+      background: rgba(88,214,154,.10);
     }
 
-    /* Center: chat */
-    .chatBody{
+    /* Center content */
+    .center{
       display:flex;
       flex-direction:column;
       min-height:0;
     }
-    .chatHead{
-      padding:12px;
-      border-bottom:1px solid var(--line);
-      display:flex;
-      align-items:flex-start;
-      justify-content:space-between;
-      gap:12px;
-    }
-    .chatTitle{
-      display:flex;
-      flex-direction:column;
-      gap:4px;
-    }
-    .chatTitle b{font-size:16px}
-    .topic{
-      color:var(--muted);
-      font-size:var(--fs2);
-    }
-
-    .messages{
-      padding:12px;
-      overflow:auto;
-      min-height:0;
-    }
-    .messages::-webkit-scrollbar{width:10px}
-    .messages::-webkit-scrollbar-thumb{background:#141414; border-radius:10px}
-    .messages::-webkit-scrollbar-track{background:#050505}
-
-    .msg{
-      padding:10px;
-      border:1px solid var(--line);
-      border-radius:14px;
-      background:rgba(6,6,6,.7);
-      margin-bottom:10px;
-    }
-    .msg.system{
-      border-color:#1c1c1c;
-      background:rgba(3,3,3,.55);
-      color:var(--muted);
-    }
-    .msgTop{
+    .center-head{
+      padding: 12px 12px 10px;
+      border-bottom: 1px solid var(--stroke);
       display:flex;
       align-items:center;
       justify-content:space-between;
       gap:10px;
-      margin-bottom:6px;
-      font-size:var(--fs2);
-      color:var(--muted);
+      background: rgba(10,11,14,.42);
+      min-height: 52px;
     }
-    .msgUser{
+    .center-title{
+      display:flex;
+      flex-direction:column;
+      gap:2px;
+      min-width:0;
+    }
+    .center-title .h{
+      margin:0;
+      font-size: 12px;
+      letter-spacing:.3px;
+      font-weight: 800;
+      white-space:nowrap;
+      overflow:hidden;
+      text-overflow:ellipsis;
+    }
+    .center-title .s{
+      font-size: 11px;
+      color: var(--muted2);
+      white-space:nowrap;
+      overflow:hidden;
+      text-overflow:ellipsis;
+    }
+
+    .center-body{
+      flex:1;
+      min-height:0;
+      overflow:auto;
+      padding: 12px;
+      display:flex;
+      flex-direction:column;
+      gap: 10px;
+    }
+
+    /* Message list */
+    .msg{
+      display:flex;
+      gap:10px;
+      align-items:flex-start;
+      padding: 10px 10px;
+      border-radius: 16px;
+      border: 1px solid rgba(0,0,0,0);
+      background: rgba(15,17,22,.35);
+      transition: border-color .12s ease, background .12s ease;
+      position:relative;
+    }
+    .msg:hover{ border-color: rgba(142,162,255,.15); background: rgba(18,21,33,.42); }
+
+    .avatar{
+      width: 34px;
+      height: 34px;
+      border-radius: 14px;
+      border: 1px solid var(--stroke);
+      background: radial-gradient(circle at 30% 30%, rgba(142,162,255,.32), rgba(15,17,22,.4));
+      box-shadow: 0 10px 22px rgba(0,0,0,.22);
+      flex: 0 0 auto;
+      position:relative;
+      overflow:hidden;
+    }
+    .avatar:after{
+      content:"";
+      position:absolute;
+      inset:-40%;
+      background: radial-gradient(circle at 30% 30%, rgba(255,255,255,.20), transparent 50%),
+                  radial-gradient(circle at 70% 65%, rgba(255,255,255,.10), transparent 55%);
+      transform: rotate(18deg);
+    }
+
+    .msg-main{ flex:1; min-width:0; }
+    .msg-top{
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:8px;
+      margin-bottom:4px;
+      min-width:0;
+    }
+    .msg-user{
       display:flex;
       align-items:center;
       gap:8px;
+      min-width:0;
     }
-    .badge{
-      padding:3px 7px;
-      border-radius:999px;
-      border:1px solid var(--line2);
-      background:rgba(0,0,0,.35);
-      color:var(--muted);
-      font-size:11px;
+    .uname{
+      font-weight: 800;
+      font-size: 12px;
+      letter-spacing:.2px;
+      white-space:nowrap;
+      overflow:hidden;
+      text-overflow:ellipsis;
     }
-    .msgText{
+    .ubadges{
+      display:flex;
+      gap:6px;
+      flex-wrap:wrap;
+    }
+    .ub{
+      font-size: 10px;
+      padding: 2px 7px;
+      border-radius: 999px;
+      border:1px solid rgba(142,162,255,.22);
+      color: rgba(142,162,255,.95);
+      background: rgba(142,162,255,.08);
+      letter-spacing:.2px;
+    }
+    .ub.gray{
+      border-color: rgba(154,163,183,.22);
+      color: rgba(154,163,183,.95);
+      background: rgba(154,163,183,.08);
+    }
+    .time{
+      font-size: 10px;
+      color: var(--muted2);
+      white-space:nowrap;
+    }
+    .body{
+      font-size: 12px;
+      line-height: 1.35;
+      color: var(--text);
       white-space:pre-wrap;
       word-break:break-word;
-      line-height:1.35;
+    }
+    .meta{
+      margin-top:6px;
+      display:flex;
+      gap:8px;
+      align-items:center;
+      color: var(--muted2);
+      font-size: 10px;
+    }
+    .meta .chip{
+      border: 1px solid var(--stroke);
+      background: rgba(12,13,16,.55);
+      padding: 2px 8px;
+      border-radius: 999px;
     }
 
+    /* Composer */
     .composer{
-      padding:12px;
-      border-top:1px solid var(--line);
-      background:rgba(0,0,0,.35);
+      border-top: 1px solid var(--stroke);
+      padding: 10px;
+      background: rgba(10,11,14,.42);
       display:flex;
+      flex-direction:column;
+      gap:8px;
+    }
+    .typingbar{
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
       gap:10px;
+      color: var(--muted2);
+      font-size: 11px;
+      min-height: 18px;
+    }
+    .typingbar .left{
+      overflow:hidden;
+      white-space:nowrap;
+      text-overflow:ellipsis;
+      min-width:0;
+    }
+    .row{
+      display:flex;
+      gap:8px;
       align-items:center;
     }
     .input{
       flex:1;
-      border:1px solid var(--line2);
-      background:rgba(6,6,6,.75);
-      border-radius:14px;
-      padding:10px 12px;
-      color:var(--txt);
+      min-width:0;
+      border-radius: 14px;
+      border: 1px solid var(--stroke);
+      background: rgba(12,13,16,.85);
+      color: var(--text);
+      padding: 10px 12px;
+      font-size: 12px;
+      outline:none;
+      transition: border-color .12s ease, box-shadow .12s ease;
     }
-    .input::placeholder{color:#7a7a7a}
+    .input::placeholder{ color: rgba(154,163,183,.55); }
+    .input:focus{ border-color: rgba(142,162,255,.30); }
 
-    /* Right: settings / user / admin tools */
-    .rightWrap{
+    .hint{
+      font-size: 11px;
+      color: var(--muted2);
+      display:flex;
+      gap:8px;
+      align-items:center;
+      justify-content:space-between;
+    }
+    .hint .kbd{
+      font-family: var(--mono);
+      font-size: 10px;
+      padding: 2px 7px;
+      border-radius: 10px;
+      border: 1px solid var(--stroke);
+      color: var(--muted);
+      background: rgba(12,13,16,.55);
+    }
+
+    /* Right panel */
+    .right{
       display:flex;
       flex-direction:column;
       min-height:0;
     }
-    .card{
-      margin:10px;
-      border:1px solid var(--line);
-      background:rgba(6,6,6,.75);
-      border-radius:14px;
-      padding:10px;
-    }
-    .row{
+    .right-head{
+      padding: 12px 12px 10px;
+      border-bottom: 1px solid var(--stroke);
       display:flex;
       align-items:center;
       justify-content:space-between;
       gap:10px;
-      margin:8px 0;
-      color:var(--muted);
-      font-size:var(--fs2);
+      background: rgba(10,11,14,.42);
     }
-    .row b{color:var(--txt); font-size:13px}
-    .hr{
-      height:1px;
-      background:var(--line);
-      margin:10px 0;
-    }
-    .miniInput{
-      width:100%;
-      border:1px solid var(--line2);
-      background:rgba(0,0,0,.35);
-      border-radius:12px;
-      padding:9px 10px;
-      margin-top:6px;
-      color:var(--txt);
-    }
-    .help{
-      color:var(--muted);
-      font-size:var(--fs2);
-      line-height:1.4;
+    .right-body{
+      flex:1;
+      min-height:0;
+      overflow:auto;
+      padding: 12px;
+      display:flex;
+      flex-direction:column;
+      gap:10px;
     }
 
-    /* Auth modal / quick loader */
-    #overlay{
+    .card{
+      border: 1px solid var(--stroke);
+      border-radius: var(--radius);
+      background: rgba(15,17,22,.35);
+      padding: 12px;
+      box-shadow: 0 18px 36px rgba(0,0,0,.16);
+    }
+    .card h3{
+      margin:0 0 8px;
+      font-size: 12px;
+      font-weight: 900;
+      letter-spacing:.3px;
+    }
+    .card p{
+      margin:0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height:1.35;
+    }
+
+    .kv{
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:10px;
+      border-top: 1px dashed rgba(154,163,183,.18);
+      padding-top: 10px;
+      margin-top: 10px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .kv b{ color: var(--text); }
+
+    .list{
+      display:flex;
+      flex-direction:column;
+      gap:8px;
+    }
+    .mini{
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:10px;
+      border:1px solid rgba(0,0,0,0);
+      background: rgba(12,13,16,.45);
+      padding: 10px;
+      border-radius: 14px;
+      cursor:pointer;
+      transition: border-color .12s ease, background .12s ease;
+      user-select:none;
+    }
+    .mini:hover{ border-color: rgba(142,162,255,.16); background: rgba(18,21,33,.42); }
+    .mini .left{
+      min-width:0;
+      display:flex;
+      flex-direction:column;
+      gap:2px;
+    }
+    .mini .t{
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing:.2px;
+      white-space:nowrap;
+      overflow:hidden;
+      text-overflow:ellipsis;
+    }
+    .mini .d{
+      font-size: 11px;
+      color: var(--muted2);
+      white-space:nowrap;
+      overflow:hidden;
+      text-overflow:ellipsis;
+    }
+
+    /* Modal system */
+    .backdrop{
+      position:fixed;
+      inset:0;
+      background: rgba(0,0,0,.64);
+      display:none;
+      align-items:center;
+      justify-content:center;
+      padding: 18px;
+      z-index: 50;
+    }
+    .backdrop.show{ display:flex; }
+    .modal{
+      width: min(560px, 96vw);
+      border-radius: 18px;
+      border: 1px solid var(--stroke);
+      background: rgba(12,13,16,.78);
+      backdrop-filter: var(--blur);
+      -webkit-backdrop-filter: var(--blur);
+      box-shadow: 0 22px 60px rgba(0,0,0,.38);
+      overflow:hidden;
+    }
+    .modal-head{
+      padding: 12px 12px 10px;
+      border-bottom: 1px solid var(--stroke);
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:10px;
+      background: rgba(10,11,14,.42);
+    }
+    .modal-head .h{
+      font-size: 12px;
+      font-weight: 900;
+      letter-spacing:.3px;
+    }
+    .modal-body{
+      padding: 12px;
+      display:flex;
+      flex-direction:column;
+      gap:10px;
+    }
+    .modal-body .row2{
+      display:grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+    .modal-foot{
+      padding: 12px;
+      border-top: 1px solid var(--stroke);
+      display:flex;
+      justify-content:flex-end;
+      gap:8px;
+      background: rgba(10,11,14,.42);
+    }
+    .small{
+      font-size: 11px;
+      color: var(--muted);
+      line-height:1.35;
+    }
+    .warn{
+      border: 1px solid rgba(255,200,87,.30);
+      background: rgba(255,200,87,.10);
+      color: rgba(255,200,87,.95);
+      padding: 10px;
+      border-radius: 14px;
+      font-size: 12px;
+      line-height:1.35;
+    }
+
+    /* Login screen */
+    .login-wrap{
       position:fixed;
       inset:0;
       display:flex;
       align-items:center;
       justify-content:center;
-      background:rgba(0,0,0,.72);
-      backdrop-filter: blur(10px);
-      z-index:10000;
+      padding: 18px;
+      z-index: 40;
     }
-    #overlay.hidden{display:none}
-
-    .modal{
-      width:min(520px, calc(100% - 24px));
-      border-radius:18px;
-      border:1px solid #1a1a1a;
-      background:linear-gradient(180deg, rgba(12,12,12,.92), rgba(0,0,0,.86));
-      box-shadow: 0 25px 80px rgba(0,0,0,.75);
+    .login{
+      width: min(540px, 96vw);
+      border-radius: 22px;
+      border: 1px solid var(--stroke);
+      background: rgba(12,13,16,.78);
+      backdrop-filter: var(--blur);
+      -webkit-backdrop-filter: var(--blur);
+      box-shadow: 0 26px 80px rgba(0,0,0,.48);
       overflow:hidden;
     }
-    .modalHead{
-      padding:14px 14px 10px;
-      border-bottom:1px solid var(--line);
+    .login-head{
+      padding: 16px;
+      border-bottom: 1px solid var(--stroke);
       display:flex;
       align-items:center;
       justify-content:space-between;
-      gap:12px;
-    }
-    .modalHead b{font-size:15px; letter-spacing:.2px}
-    .modalBody{padding:14px}
-    .grid2{
-      display:grid;
-      grid-template-columns: 1fr 1fr;
       gap:10px;
+      background: rgba(10,11,14,.42);
     }
-    .label{
-      color:var(--muted);
-      font-size:var(--fs2);
-      margin-bottom:6px;
-    }
-    .error{
-      margin-top:10px;
-      padding:10px;
-      border-radius:14px;
-      border:1px solid rgba(255,77,109,.35);
-      background:rgba(255,77,109,.08);
-      color:#ff9bb0;
-      display:none;
-      font-size:var(--fs2);
-      line-height:1.35;
-    }
-    .error.show{display:block}
-
-    .loader{
+    .login-head .b{
       display:flex;
       align-items:center;
-      justify-content:center;
       gap:10px;
-      padding:18px;
-      color:var(--muted);
-      font-size:var(--fs2);
     }
-    .spin{
-      width:18px; height:18px;
-      border-radius:99px;
-      border:2px solid #1d1d1d;
-      border-top-color:#f2f2f2;
-      animation: spin 0.8s linear infinite;
+    .login-head h2{
+      margin:0;
+      font-size: 14px;
+      font-weight: 900;
+      letter-spacing:.3px;
     }
-    @keyframes spin{to{transform:rotate(360deg)}}
+    .login-body{
+      padding: 16px;
+      display:flex;
+      flex-direction:column;
+      gap: 10px;
+    }
+    .login-grid{
+      display:grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+    .login-body .row{
+      display:flex;
+      gap:10px;
+      align-items:center;
+    }
+    .msgline{
+      font-size: 11px;
+      color: var(--muted);
+      display:flex;
+      justify-content:space-between;
+      gap:10px;
+      align-items:center;
+    }
+    .msgline b{ color: var(--text); }
+    .login-foot{
+      padding: 16px;
+      border-top: 1px solid var(--stroke);
+      display:flex;
+      justify-content:space-between;
+      align-items:center;
+      gap:10px;
+      background: rgba(10,11,14,.42);
+    }
+    .tag{
+      font-family: var(--mono);
+      font-size: 10px;
+      padding: 3px 8px;
+      border-radius: 999px;
+      border: 1px solid var(--stroke);
+      background: rgba(12,13,16,.55);
+      color: var(--muted);
+    }
 
-    /* Toast */
-    #toast{
+    /* Loading screen after login */
+    .loading{
       position:fixed;
-      left:50%;
-      bottom:14px;
-      transform:translateX(-50%);
-      padding:10px 12px;
-      border-radius:14px;
-      border:1px solid var(--line2);
-      background:rgba(0,0,0,.75);
-      box-shadow: 0 18px 60px rgba(0,0,0,.8);
-      color:var(--soft);
-      z-index:20000;
+      inset:0;
       display:none;
-      font-size:var(--fs2);
-      max-width:min(860px, calc(100% - 28px));
+      align-items:center;
+      justify-content:center;
+      z-index: 45;
+      background: rgba(0,0,0,.62);
+      backdrop-filter: var(--blur);
+      -webkit-backdrop-filter: var(--blur);
     }
-    #toast.show{display:block}
+    .loading.show{ display:flex; }
+    .load-card{
+      width: min(520px, 96vw);
+      border: 1px solid var(--stroke);
+      border-radius: 22px;
+      background: rgba(12,13,16,.78);
+      box-shadow: 0 26px 80px rgba(0,0,0,.45);
+      overflow:hidden;
+    }
+    .load-top{
+      padding: 16px;
+      border-bottom: 1px solid var(--stroke);
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:10px;
+      background: rgba(10,11,14,.42);
+    }
+    .load-top .t{
+      font-weight: 900;
+      letter-spacing:.3px;
+      font-size: 13px;
+    }
+    .load-body{
+      padding: 16px;
+      display:flex;
+      flex-direction:column;
+      gap:10px;
+    }
+    .bar{
+      height: 10px;
+      border-radius: 999px;
+      border: 1px solid var(--stroke);
+      background: rgba(12,13,16,.55);
+      overflow:hidden;
+    }
+    .bar > i{
+      display:block;
+      height:100%;
+      width: 22%;
+      background: linear-gradient(90deg, rgba(142,162,255,.25), rgba(142,162,255,.80), rgba(255,92,122,.70));
+      border-radius: 999px;
+      animation: prog 1.15s ease-in-out infinite;
+    }
+    @keyframes prog{
+      0%{ transform: translateX(-20%); width: 18%; opacity:.55; }
+      45%{ transform: translateX(140%); width: 55%; opacity:1; }
+      100%{ transform: translateX(280%); width: 18%; opacity:.55; }
+    }
+
+    /* Skeleton loaders */
+    .skeleton{
+      border: 1px solid rgba(0,0,0,0);
+      background: rgba(15,17,22,.35);
+      border-radius: 16px;
+      padding: 12px;
+      overflow:hidden;
+      position:relative;
+    }
+    .skeleton:before{
+      content:"";
+      position:absolute;
+      inset:0;
+      background: linear-gradient(90deg, transparent, rgba(255,255,255,.06), transparent);
+      transform: translateX(-100%);
+      animation: sk 1.05s ease-in-out infinite;
+    }
+    @keyframes sk{
+      0%{ transform: translateX(-100%); }
+      100%{ transform: translateX(100%); }
+    }
+    .sk-row{
+      height: 10px;
+      border-radius: 999px;
+      background: rgba(154,163,183,.12);
+      margin-bottom: 8px;
+    }
+    .sk-row:last-child{ margin-bottom: 0; }
+    .sk-row.w50{ width: 50%; }
+    .sk-row.w70{ width: 70%; }
+    .sk-row.w90{ width: 90%; }
+
+    /* Context menu for right click */
+    .ctx{
+      position: fixed;
+      min-width: 180px;
+      border-radius: 14px;
+      border: 1px solid var(--stroke);
+      background: rgba(12,13,16,.92);
+      box-shadow: 0 18px 60px rgba(0,0,0,.45);
+      display:none;
+      z-index: 70;
+      overflow:hidden;
+    }
+    .ctx.show{ display:block; }
+    .ctx .item{
+      padding: 10px 10px;
+      font-size: 12px;
+      color: var(--text);
+      border-bottom: 1px solid rgba(154,163,183,.12);
+      cursor:pointer;
+      user-select:none;
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:10px;
+    }
+    .ctx .item:last-child{ border-bottom:none; }
+    .ctx .item:hover{ background: rgba(18,21,33,.65); }
+    .ctx .item.danger{ color: rgba(255,92,122,.95); }
+
+    /* Custom cursor */
+    .cursor{
+      position: fixed;
+      left: 0;
+      top: 0;
+      width: 18px;
+      height: 18px;
+      border-radius: 999px;
+      border: 1px solid rgba(142,162,255,.40);
+      background: rgba(142,162,255,.10);
+      transform: translate(-50%, -50%);
+      pointer-events: none;
+      z-index: 100;
+      box-shadow: 0 12px 40px rgba(142,162,255,.12);
+      transition: width .12s ease, height .12s ease, border-color .12s ease, background .12s ease;
+      mix-blend-mode: screen;
+    }
+    .cursor.big{
+      width: 26px;
+      height: 26px;
+      border-color: rgba(255,200,87,.40);
+      background: rgba(255,200,87,.08);
+    }
+    .trail{
+      position: fixed;
+      left: 0;
+      top: 0;
+      width: 12px;
+      height: 12px;
+      border-radius: 999px;
+      background: rgba(255,255,255,.06);
+      transform: translate(-50%, -50%);
+      pointer-events: none;
+      z-index: 99;
+      filter: blur(0.2px);
+    }
 
     /* Responsive */
-    @media (max-width: 1020px){
-      .main{grid-template-columns: 280px 1fr}
-      .panel.right{display:none}
+    @media (max-width: 1100px){
+      .main{ grid-template-columns: 250px 1fr; }
+      .right{ display:none; }
     }
-    @media (max-width: 760px){
-      .main{grid-template-columns: 1fr}
-      .panel.left{display:none}
-      body{overflow:auto; cursor:auto}
-      #cursor{display:none}
+    @media (max-width: 820px){
+      .main{ grid-template-columns: 1fr; }
+      .sidebar{ display:none; }
     }
   </style>
 </head>
 
-<body>
-  <div id="cursor"></div>
-  <div id="toast"></div>
+<body data-fontscale="1.0" data-reducedmotion="0" data-highcontrast="0" data-focusrings="1">
+  <!-- Custom cursor (enabled by default; can be disabled) -->
+  <div id="cursor" class="cursor"></div>
+  <div id="trail" class="trail" style="opacity:.0"></div>
 
-  <!-- Auth + Loading Overlay -->
-  <div id="overlay">
-    <div class="modal" role="dialog" aria-modal="true">
-      <div class="modalHead">
-        <div class="brand">
+  <!-- Login overlay -->
+  <div id="loginWrap" class="login-wrap">
+    <div class="login">
+      <div class="login-head">
+        <div class="b">
           <div class="logo"></div>
           <div>
-            <b>tonkotsu.online</b><br/>
-            <span style="color:var(--muted);font-size:var(--fs2)">Sign in to join public group chats</span>
+            <h2>tonkotsu.online</h2>
+            <div class="sub">Compact black beta. Global is the default feed.</div>
           </div>
         </div>
-        <button class="btn small ghost" id="btnReload">Reload</button>
+        <span class="tag">BETA</span>
       </div>
 
-      <div class="modalBody">
-        <!-- IMPORTANT: no inbox shown on login screen. -->
-        <div id="authForm">
-          <div class="grid2">
-            <div>
-              <div class="label">Username</div>
-              <input id="authUser" class="miniInput" placeholder="username (4-20 chars)" autocomplete="username" />
-            </div>
-            <div>
-              <div class="label">Password</div>
-              <input id="authPass" class="miniInput" placeholder="password" type="password" autocomplete="current-password" />
-            </div>
-          </div>
-
-          <div style="display:flex; gap:10px; margin-top:12px; flex-wrap:wrap">
-            <button class="btn" id="btnLogin">Login / Create Account</button>
-            <button class="btn" id="btnGuest">Continue as Guest</button>
-          </div>
-
-          <div class="error" id="authErr"></div>
-
-          <div class="help" style="margin-top:12px">
-            Login creates an account if it does not exist yet. Guest mode creates a temporary account.
-          </div>
+      <div class="login-body">
+        <div class="warn" id="betaWarn" style="display:none">
+          <b>Beta Notice</b><br/>
+          If you run into issues, add <b>fishy_x1</b> on Discord or visit <b>fishyramen</b> on GitHub.
+          This is a beta build and may have bugs.
         </div>
 
-        <div id="quickLoader" class="loader" style="display:none">
-          <div class="spin"></div>
-          <div>Loading your rooms…</div>
+        <div class="login-grid">
+          <input id="loginUser" class="input" placeholder="Username (A–Z 0–9, 4–20)" autocomplete="username" />
+          <input id="loginPass" class="input" placeholder="Password (4–64)" type="password" autocomplete="current-password" />
+        </div>
+
+        <div class="msgline">
+          <span id="loginMsg">Sign in or create an account (max 1 account/day per device).</span>
+          <span id="caps" class="tag" style="display:none">CAPS</span>
+        </div>
+
+        <div class="row">
+          <button id="btnLogin" class="btn primary" style="flex:1">Sign in / Create</button>
+          <button id="btnGuest" class="btn" style="flex:1">Continue as Guest</button>
+        </div>
+
+        <div class="small">
+          No inbox is shown here. You will land on <b>Global</b> after login.
         </div>
       </div>
+
+      <div class="login-foot">
+        <div class="small">
+          By using this beta you agree to keep it respectful. Global is auto-moderated.
+        </div>
+        <button id="btnToggleBeta" class="btn ghost">Beta Info</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Post-login loading overlay -->
+  <div id="loading" class="loading">
+    <div class="load-card">
+      <div class="load-top">
+        <div class="t">Loading your workspace…</div>
+        <span class="tag" id="loadTag">sync</span>
+      </div>
+      <div class="load-body">
+        <div class="bar"><i></i></div>
+        <div class="small" id="loadMsg">Preparing Global, Messages, and Group Chats.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Context menu -->
+  <div id="ctx" class="ctx"></div>
+
+  <!-- Modal -->
+  <div id="backdrop" class="backdrop">
+    <div class="modal">
+      <div class="modal-head">
+        <div class="h" id="modalTitle">Modal</div>
+        <button class="btn ghost" id="modalClose">Close</button>
+      </div>
+      <div class="modal-body" id="modalBody"></div>
+      <div class="modal-foot" id="modalFoot"></div>
     </div>
   </div>
 
   <!-- App -->
-  <div class="app">
+  <div class="root" id="app" style="display:none">
     <div class="topbar">
       <div class="brand">
         <div class="logo"></div>
         <div>
-          <b>tonkotsu.online</b><br />
-          <span style="color:var(--muted);font-size:var(--fs2)">Public group chats</span>
+          <h1>tonkotsu.online</h1>
+          <div class="sub" id="subtitle">Compact black beta</div>
         </div>
       </div>
 
-      <div class="statusRow">
-        <div class="pill">
-          <div id="netDot" class="dot"></div>
-          <span id="netText">offline</span>
+      <div class="top-actions">
+        <div class="pill" id="presencePill" title="Presence">
+          <span class="dot" id="presenceDot"></span>
+          <span id="presenceLabel">online</span>
         </div>
-        <div class="pill">
-          <span>online</span>
-          <b id="onlineCount" style="color:var(--txt)">0</b>
+
+        <div class="pill" id="onlinePill" title="Users online">
+          <span class="dot" style="background:var(--accent); box-shadow:0 0 0 3px rgba(142,162,255,.12)"></span>
+          <span><b id="onlineCount">0</b> online</span>
         </div>
-        <div class="pill">
-          <span>me</span>
-          <b id="meName" style="color:var(--txt)">—</b>
-        </div>
-        <button class="btn small danger" id="btnLogout">Logout</button>
+
+        <button id="btnUser" class="btn">User</button>
+        <button id="btnLogout" class="btn danger">Log out</button>
       </div>
     </div>
 
     <div class="main">
-      <!-- Left panel: Public rooms -->
-      <div class="panel left">
-        <div class="panelHeader">
-          <h3>Public Rooms</h3>
-          <button class="btn small" id="btnRefreshRooms">Refresh</button>
+      <!-- Sidebar -->
+      <div class="panel sidebar">
+        <div class="side-head">
+          <div class="label">Navigation</div>
+          <span class="tag" id="navTag">global</span>
         </div>
-        <div class="roomsList" id="roomsList"></div>
+        <div class="side-scroll">
+          <div class="nav-item active" data-tab="global">
+            <div class="nav-left">
+              <div class="ico">G</div>
+              <div class="nav-title">Global</div>
+            </div>
+            <span class="badge hot">AUTO</span>
+          </div>
+
+          <div class="nav-item" data-tab="messages">
+            <div class="nav-left">
+              <div class="ico">M</div>
+              <div class="nav-title">Messages</div>
+            </div>
+            <span class="badge" id="dmBadge">DM</span>
+          </div>
+
+          <div class="nav-item" data-tab="groups">
+            <div class="nav-left">
+              <div class="ico">C</div>
+              <div class="nav-title">Group Chats</div>
+            </div>
+            <span class="badge" id="gcBadge">GC</span>
+          </div>
+
+          <div class="nav-item" data-tab="whatsnew">
+            <div class="nav-left">
+              <div class="ico">N</div>
+              <div class="nav-title">What’s New</div>
+            </div>
+            <span class="badge new">NEW</span>
+          </div>
+
+          <div class="nav-item" data-tab="settings">
+            <div class="nav-left">
+              <div class="ico">S</div>
+              <div class="nav-title">Settings</div>
+            </div>
+            <span class="badge">UI</span>
+          </div>
+        </div>
       </div>
 
-      <!-- Center: Chat -->
-      <div class="panel">
-        <div class="chatHead">
-          <div class="chatTitle">
-            <b id="roomTitle">—</b>
-            <div class="topic" id="roomTopic">—</div>
+      <!-- Center -->
+      <div class="panel center">
+        <div class="center-head">
+          <div class="center-title">
+            <div class="h" id="centerH">Global</div>
+            <div class="s" id="centerS">Public feed. Auto-moderated.</div>
           </div>
           <div style="display:flex; gap:8px; align-items:center">
-            <span class="tag" id="roleTag">member</span>
-            <button class="btn small" id="btnJoinGlobal">Join Global</button>
+            <button id="btnJumpLastRead" class="btn">Jump to last read</button>
+            <button id="btnRefresh" class="btn">Refresh</button>
           </div>
         </div>
 
-        <div class="messages" id="messages"></div>
+        <div class="center-body" id="centerBody">
+          <!-- messages -->
+        </div>
 
-        <div class="composer">
-          <input id="msgInput" class="input" placeholder="Type a message… (Enter to send)" />
-          <button class="btn" id="btnSend">Send</button>
+        <div class="composer" id="composer">
+          <div class="typingbar">
+            <div class="left" id="typingText"></div>
+            <div class="right" id="cooldownText"></div>
+          </div>
+          <div class="row">
+            <input id="msgInput" class="input" placeholder="Message…" />
+            <button id="btnSend" class="btn primary" style="min-width:90px">Send</button>
+          </div>
+          <div class="hint">
+            <span>Right-click a message for edit/delete/report (edit/delete within 1 minute).</span>
+            <span class="kbd">Enter</span>
+          </div>
         </div>
       </div>
 
-      <!-- Right: Settings / Admin -->
+      <!-- Right panel -->
       <div class="panel right">
-        <div class="panelHeader">
-          <h3>Settings & Tools</h3>
-          <button class="btn small" id="btnPing">Ping</button>
+        <div class="right-head">
+          <div class="label" id="rightLabel">Info</div>
+          <button id="btnRightAction" class="btn">Action</button>
         </div>
-
-        <div class="rightWrap" style="overflow:auto">
-          <div class="card">
-            <div class="row"><b>Account</b><span id="meMeta">—</span></div>
-            <div class="hr"></div>
-            <div class="help">
-              Owner/admin tools are enabled by the server and will work if your role permits it.
-            </div>
-          </div>
-
-          <div class="card">
-            <div class="row"><b>Room Admin</b><span id="adminHint">—</span></div>
-            <div class="help">Target username (exact). These actions require owner/admin.</div>
-            <input id="adminTarget" class="miniInput" placeholder="target username" />
-            <div style="display:flex; gap:10px; margin-top:10px; flex-wrap:wrap">
-              <button class="btn small" id="btnPromote">Promote</button>
-              <button class="btn small" id="btnDemote">Demote</button>
-              <button class="btn small danger" id="btnBan">Ban</button>
-              <button class="btn small" id="btnUnban">Unban</button>
-            </div>
-            <div class="hr"></div>
-            <div class="help">Set topic (owner/admin):</div>
-            <input id="topicInput" class="miniInput" placeholder="room topic (max 140)" />
-            <button class="btn small" id="btnSetTopic" style="margin-top:10px">Update Topic</button>
-          </div>
-
-          <div class="card">
-            <div class="row"><b>Debug</b><span id="dbg">—</span></div>
-            <div class="help">
-              If login/guest fails, check that <span style="color:var(--soft)">server/server.js</span> is running and that
-              <span style="color:var(--soft)">/api/status</span> returns ok.
-            </div>
-          </div>
+        <div class="right-body" id="rightBody">
+          <!-- dynamic cards -->
         </div>
       </div>
     </div>
   </div>
 
-  <script>
-    /* ================================
-       tonkotsu.online — Frontend Logic
-       - Black theme CSS is above
-       - Custom cursor enabled by default
-       - Quick loader after auth
-       - Buttons wired
-       - Public group rooms
-       - Owner/admin controls via sockets
-       ================================ */
-
-    // --------- DOM helpers ----------
-    const $ = (id) => document.getElementById(id);
-    const el = {
-      cursor: $("cursor"),
-      toast: $("toast"),
-      overlay: $("overlay"),
-      authForm: $("authForm"),
-      authUser: $("authUser"),
-      authPass: $("authPass"),
-      authErr: $("authErr"),
-      btnLogin: $("btnLogin"),
-      btnGuest: $("btnGuest"),
-      btnReload: $("btnReload"),
-      quickLoader: $("quickLoader"),
-
-      netDot: $("netDot"),
-      netText: $("netText"),
-      onlineCount: $("onlineCount"),
-      meName: $("meName"),
-      meMeta: $("meMeta"),
-      btnLogout: $("btnLogout"),
-
-      roomsList: $("roomsList"),
-      btnRefreshRooms: $("btnRefreshRooms"),
-
-      roomTitle: $("roomTitle"),
-      roomTopic: $("roomTopic"),
-      roleTag: $("roleTag"),
-      btnJoinGlobal: $("btnJoinGlobal"),
-
-      messages: $("messages"),
-      msgInput: $("msgInput"),
-      btnSend: $("btnSend"),
-
-      btnPing: $("btnPing"),
-      adminTarget: $("adminTarget"),
-      btnPromote: $("btnPromote"),
-      btnDemote: $("btnDemote"),
-      btnBan: $("btnBan"),
-      btnUnban: $("btnUnban"),
-      topicInput: $("topicInput"),
-      btnSetTopic: $("btnSetTopic"),
-
-      adminHint: $("adminHint"),
-      dbg: $("dbg"),
-    };
-
-    // --------- State ----------
-    const state = {
-      token: "",
-      me: null,
-      socket: null,
-      publicRooms: [],
-      activeRoomKey: "global", // can be id or name; server accepts "global"
-      activeRoom: null,
-      role: "member",
-      connected: false,
-      seenClientIds: new Set(),
-      joining: false,
-    };
-
-    // --------- Toast ----------
-    let toastTimer = null;
-    function toast(msg, ms=2200){
-      el.toast.textContent = String(msg || "");
-      el.toast.classList.add("show");
-      clearTimeout(toastTimer);
-      toastTimer = setTimeout(()=>el.toast.classList.remove("show"), ms);
-    }
-
-    // --------- Custom cursor ----------
-    const cursor = { x: window.innerWidth/2, y: window.innerHeight/2, tx: 0, ty: 0 };
-    document.addEventListener("mousemove", (e)=>{
-      cursor.tx = e.clientX;
-      cursor.ty = e.clientY;
-    }, { passive:true });
-
-    function cursorTick(){
-      cursor.x += (cursor.tx - cursor.x) * 0.28;
-      cursor.y += (cursor.ty - cursor.y) * 0.28;
-      el.cursor.style.left = cursor.x + "px";
-      el.cursor.style.top  = cursor.y + "px";
-      requestAnimationFrame(cursorTick);
-    }
-    cursorTick();
-
-    function cursorPulse(mode){
-      el.cursor.classList.add("big");
-      if (mode === "ring") el.cursor.classList.add("ring");
-      setTimeout(()=>{
-        el.cursor.classList.remove("big");
-        el.cursor.classList.remove("ring");
-      }, 160);
-    }
-
-    document.addEventListener("mousedown", ()=>cursorPulse("ring"));
-    document.addEventListener("keydown", ()=>cursorPulse("ring"));
-
-    // enlarge cursor over clickable elements
-    function setHoverCursor(){
-      const hoverables = document.querySelectorAll("button, .roomItem, a, input");
-      hoverables.forEach(h=>{
-        h.addEventListener("mouseenter", ()=>el.cursor.classList.add("big"));
-        h.addEventListener("mouseleave", ()=>el.cursor.classList.remove("big"));
-      });
-    }
-    setHoverCursor();
-
-    // --------- Networking helpers ----------
-    async function api(path, opts={}){
-      const headers = Object.assign({ "Content-Type":"application/json" }, opts.headers || {});
-      if (state.token) headers["Authorization"] = "Bearer " + state.token;
-      const res = await fetch(path, Object.assign({}, opts, { headers }));
-      const json = await res.json().catch(()=>({ ok:false, error:"Bad JSON" }));
-      if (!res.ok && json && json.error) throw new Error(json.error);
-      if (json && json.ok === false && json.error) throw new Error(json.error);
-      return json;
-    }
-
-    function setNet(ok){
-      state.connected = !!ok;
-      el.netDot.className = "dot " + (ok ? "good" : "bad");
-      el.netText.textContent = ok ? "online" : "offline";
-    }
-
-    function showOverlay(show){
-      el.overlay.classList.toggle("hidden", !show);
-    }
-
-    function showAuthError(msg){
-      el.authErr.textContent = String(msg || "");
-      el.authErr.classList.toggle("show", !!msg);
-    }
-
-    function showLoader(show){
-      el.quickLoader.style.display = show ? "flex" : "none";
-      el.authForm.style.display = show ? "none" : "block";
-    }
-
-    // --------- Rendering ----------
-    function clearNode(n){ while(n.firstChild) n.removeChild(n.firstChild); }
-
-    function renderRooms(){
-      clearNode(el.roomsList);
-      const rooms = state.publicRooms || [];
-      if (!rooms.length){
-        const empty = document.createElement("div");
-        empty.className = "help";
-        empty.textContent = "No public rooms loaded.";
-        el.roomsList.appendChild(empty);
-        return;
-      }
-
-      for (const r of rooms){
-        const item = document.createElement("div");
-        item.className = "roomItem" + ((state.activeRoom && state.activeRoom.id === r.id) ? " active" : "");
-        item.dataset.roomId = r.id;
-
-        const top = document.createElement("div");
-        top.className = "roomTop";
-
-        const name = document.createElement("div");
-        name.className = "roomName";
-        name.textContent = r.name;
-
-        const tag = document.createElement("div");
-        tag.className = "tag";
-        tag.textContent = "public";
-
-        top.appendChild(name);
-        top.appendChild(tag);
-
-        const meta = document.createElement("div");
-        meta.className = "roomMeta";
-        meta.textContent = r.topic ? r.topic : "—";
-
-        item.appendChild(top);
-        item.appendChild(meta);
-
-        item.addEventListener("click", ()=>{
-          cursorPulse("ring");
-          joinRoom(r.id);
-        });
-
-        el.roomsList.appendChild(item);
-      }
-    }
-
-    function renderHeader(){
-      el.meName.textContent = state.me ? state.me.username : "—";
-      el.meMeta.textContent = state.me
-        ? (state.me.isGuest ? "guest" : "account") + " • lvl " + (state.me.level || 1)
-        : "—";
-      el.adminHint.textContent = state.activeRoom ? ("room: " + state.activeRoom.name) : "—";
-      el.roleTag.textContent = state.role || "member";
-      el.roomTitle.textContent = state.activeRoom ? state.activeRoom.name : "—";
-      el.roomTopic.textContent = state.activeRoom ? (state.activeRoom.topic || "—") : "—";
-    }
-
-    function addMessage(msg){
-      const wrap = document.createElement("div");
-      wrap.className = "msg" + (msg.system ? " system" : "");
-
-      const top = document.createElement("div");
-      top.className = "msgTop";
-
-      const user = document.createElement("div");
-      user.className = "msgUser";
-
-      const who = document.createElement("span");
-      who.textContent = msg.user || "—";
-
-      user.appendChild(who);
-
-      const time = document.createElement("span");
-      time.textContent = (msg.ts ? new Date(msg.ts).toLocaleTimeString() : "");
-
-      top.appendChild(user);
-      top.appendChild(time);
-
-      const text = document.createElement("div");
-      text.className = "msgText";
-      text.textContent = msg.text || "";
-
-      wrap.appendChild(top);
-      wrap.appendChild(text);
-
-      el.messages.appendChild(wrap);
-      el.messages.scrollTop = el.messages.scrollHeight;
-    }
-
-    function setHistory(messages){
-      clearNode(el.messages);
-      (messages || []).forEach(addMessage);
-      el.messages.scrollTop = el.messages.scrollHeight;
-    }
-
-    // --------- Auth flow ----------
-    function loadToken(){
-      try{
-        const t = localStorage.getItem("tonkotsu_token") || "";
-        if (t) state.token = t;
-      }catch{}
-    }
-    function saveToken(t){
-      state.token = t || "";
-      try{
-        if (t) localStorage.setItem("tonkotsu_token", t);
-        else localStorage.removeItem("tonkotsu_token");
-      }catch{}
-    }
-
-    async function loginOrCreate(){
-      showAuthError("");
-      const username = (el.authUser.value || "").trim();
-      const password = (el.authPass.value || "").trim();
-      if (username.length < 4) return showAuthError("Username must be at least 4 characters.");
-      if (password.length < 4) return showAuthError("Password must be at least 4 characters.");
-
-      showLoader(true);
-      try{
-        const r = await api("/api/auth/login", {
-          method:"POST",
-          body: JSON.stringify({ username, password })
-        });
-        saveToken(r.token);
-        state.me = r.me;
-        await bootAfterAuth();
-      }catch(e){
-        showLoader(false);
-        showAuthError(e.message || "Login failed.");
-      }
-    }
-
-    async function guest(){
-      showAuthError("");
-      showLoader(true);
-      try{
-        const r = await api("/api/auth/guest", {
-          method:"POST",
-          body: JSON.stringify({ username: (el.authUser.value||"").trim() })
-        });
-        saveToken(r.token);
-        state.me = r.me;
-        await bootAfterAuth();
-      }catch(e){
-        showLoader(false);
-        showAuthError(e.message || "Guest failed.");
-      }
-    }
-
-    async function logout(){
-      try{ await api("/api/auth/logout", { method:"POST" }); }catch{}
-      saveToken("");
-      state.me = null;
-      if (state.socket){
-        try{ state.socket.disconnect(); }catch{}
-        state.socket = null;
-      }
-      showLoader(false);
-      showAuthError("");
-      showOverlay(true);
-      toast("Logged out");
-    }
-
-    // --------- Boot after auth ----------
-    async function bootAfterAuth(){
-      // quick loading screen after logging in
-      showLoader(true);
-
-      // load me + rooms
-      const meRes = await api("/api/me");
-      state.me = meRes.me;
-      state.publicRooms = meRes.publicRooms || [];
-      renderRooms();
-
-      // connect socket + authenticate
-      await connectSocket();
-
-      // join default room (global)
-      await joinRoom("global");
-
-      // done
-      showOverlay(false);
-      renderHeader();
-      toast("Welcome");
-    }
-
-    async function connectSocket(){
-      return new Promise((resolve, reject)=>{
-        const s = io({
-          transports: ["websocket", "polling"],
-          reconnection: true,
-          reconnectionAttempts: 10,
-          reconnectionDelay: 300,
-          timeout: 8000
-        });
-
-        state.socket = s;
-
-        let authed = false;
-
-        s.on("connect", ()=>{
-          setNet(true);
-          // auth handshake
-          s.emit("auth", { token: state.token }, (ack)=>{
-            if (!ack || !ack.ok){
-              setNet(false);
-              reject(new Error((ack && ack.error) || "Socket auth failed."));
-              return;
-            }
-            authed = true;
-            state.me = ack.me;
-            renderHeader();
-            resolve();
-          });
-        });
-
-        s.on("disconnect", ()=>{
-          setNet(false);
-        });
-
-        s.on("presence", (p)=>{
-          el.onlineCount.textContent = (p && p.online) ? String(p.online) : "0";
-        });
-
-        s.on("server:toast", (m)=>{
-          if (m && m.message) toast(m.message);
-        });
-
-        s.on("room:history", (payload)=>{
-          // optional server push
-          if (!payload) return;
-          // only apply if it's the active room key
-          // payload.room can be "global" or an id; keep it simple
-          setHistory(payload.messages || []);
-        });
-
-        s.on("room:msg", (payload)=>{
-          if (!payload || !payload.msg) return;
-          // Only show messages for active room
-          // Server emits payload.room as the key used by client; we join by id mostly.
-          // If activeRoom exists and room key matches either id/name/global, accept.
-          const key = String(payload.room || "");
-          const activeId = state.activeRoom ? state.activeRoom.id : "";
-          const activeName = state.activeRoom ? state.activeRoom.name.toLowerCase() : "";
-          const ok =
-            key === "global" ||
-            key === activeId ||
-            key.toLowerCase() === activeName ||
-            (state.activeRoomKey && key === state.activeRoomKey);
-
-          if (!ok) return;
-
-          // de-dupe optimistic sends if clientId matches
-          const m = payload.msg;
-          if (m.clientId && state.seenClientIds.has(m.clientId)) return;
-          addMessage(m);
-        });
-
-        // if connect happens but auth never comes back
-        setTimeout(()=>{
-          if (!authed && s.connected){
-            reject(new Error("Socket auth timeout."));
-          }
-        }, 9000);
-      });
-    }
-
-    // --------- Rooms / Join ----------
-    async function refreshRooms(){
-      try{
-        const meRes = await api("/api/me");
-        state.publicRooms = meRes.publicRooms || [];
-        renderRooms();
-
-        // Keep active room object updated
-        if (state.activeRoom){
-          const updated = state.publicRooms.find(r=>r.id === state.activeRoom.id) || null;
-          if (updated) state.activeRoom = updated;
-          renderHeader();
-        }
-      }catch(e){
-        toast(e.message || "Failed to refresh rooms");
-      }
-    }
-
-    function computeRole(room){
-      if (!room || !state.me) return "member";
-      const u = state.me.username;
-      if (u === room.owner) return "owner";
-      if ((room.admins || []).includes(u)) return "admin";
-      return "member";
-    }
-
-    async function joinRoom(roomKey){
-      if (!state.socket || !state.socket.connected) return toast("Not connected");
-      if (state.joining) return;
-      state.joining = true;
-
-      try{
-        const key = String(roomKey || "global");
-        // resolve room object
-        let roomObj = null;
-        if (key === "global"){
-          roomObj = state.publicRooms.find(r=>r.name.toLowerCase() === "global") || state.publicRooms[0] || null;
-        } else {
-          roomObj = state.publicRooms.find(r=>r.id === key) || null;
-        }
-        if (!roomObj){
-          // if rooms not loaded, refresh then retry once
-          await refreshRooms();
-          roomObj = (key === "global")
-            ? (state.publicRooms.find(r=>r.name.toLowerCase() === "global") || state.publicRooms[0] || null)
-            : (state.publicRooms.find(r=>r.id === key) || null);
-        }
-        if (!roomObj) throw new Error("Room not found.");
-
-        state.activeRoomKey = key;
-        state.activeRoom = roomObj;
-        state.role = computeRole(roomObj);
-        renderRooms();
-        renderHeader();
-
-        // request join + history
-        await new Promise((resolve, reject)=>{
-          state.socket.emit("room:join", { room: key }, (ack)=>{
-            if (!ack || !ack.ok) return reject(new Error((ack && ack.error) || "Join failed."));
-            setHistory(ack.history || []);
-            resolve();
-          });
-        });
-
-        toast("Joined " + roomObj.name);
-      } catch (e){
-        toast(e.message || "Join failed");
-      } finally {
-        state.joining = false;
-      }
-    }
-
-    // --------- Send message ----------
-    async function sendMessage(){
-      if (!state.socket || !state.socket.connected) return toast("Not connected");
-      if (!state.activeRoomKey) return toast("No room selected");
-
-      const text = (el.msgInput.value || "").trim();
-      if (!text) return;
-
-      const clientId = "c_" + Math.random().toString(16).slice(2) + "_" + Date.now().toString(36);
-      state.seenClientIds.add(clientId);
-
-      el.msgInput.value = "";
-
-      state.socket.emit("room:send", { room: state.activeRoomKey, text, clientId }, (ack)=>{
-        if (!ack || !ack.ok){
-          toast((ack && ack.error) || "Send failed");
-          return;
-        }
-        // optimistic de-dupe will hide double-send
-      });
-    }
-
-    // --------- Admin tools ----------
-    function requireRoomSelected(){
-      if (!state.activeRoom) throw new Error("Select a room first.");
-    }
-
-    function adminAction(eventName, payload){
-      if (!state.socket || !state.socket.connected) return toast("Not connected");
-      try{ requireRoomSelected(); }catch(e){ return toast(e.message); }
-
-      state.socket.emit(eventName, Object.assign({ room: state.activeRoomKey }, payload), (ack)=>{
-        if (!ack || !ack.ok){
-          toast((ack && ack.error) || "Action failed");
-          return;
-        }
-        toast("Done");
-        // refresh role/room meta
-        refreshRooms().then(()=> {
-          if (state.activeRoom){
-            state.role = computeRole(state.activeRoom);
-            renderHeader();
-          }
-        });
-      });
-    }
-
-    // --------- Buttons wiring (fix: none of the buttons work) ----------
-    el.btnLogin.addEventListener("click", ()=>{ cursorPulse("ring"); loginOrCreate(); });
-    el.btnGuest.addEventListener("click", ()=>{ cursorPulse("ring"); guest(); });
-    el.btnReload.addEventListener("click", ()=>{ cursorPulse("ring"); location.reload(); });
-
-    el.btnLogout.addEventListener("click", ()=>{ cursorPulse("ring"); logout(); });
-
-    el.btnRefreshRooms.addEventListener("click", ()=>{ cursorPulse("ring"); refreshRooms(); });
-
-    el.btnJoinGlobal.addEventListener("click", ()=>{ cursorPulse("ring"); joinRoom("global"); });
-
-    el.btnSend.addEventListener("click", ()=>{ cursorPulse("ring"); sendMessage(); });
-    el.msgInput.addEventListener("keydown", (e)=>{
-      if (e.key === "Enter"){
-        e.preventDefault();
-        cursorPulse("ring");
-        sendMessage();
-      }
-    });
-
-    el.btnPing.addEventListener("click", async ()=>{
-      cursorPulse("ring");
-      try{
-        const s = await api("/api/status");
-        toast("Server ok • rooms: " + (s.publicRooms ?? "?"));
-        el.dbg.textContent = "ok @ " + new Date().toLocaleTimeString();
-      }catch(e){
-        toast(e.message || "Ping failed");
-        el.dbg.textContent = "ping failed";
-      }
-    });
-
-    el.btnPromote.addEventListener("click", ()=>{
-      cursorPulse("ring");
-      adminAction("room:promote", { username: el.adminTarget.value });
-    });
-    el.btnDemote.addEventListener("click", ()=>{
-      cursorPulse("ring");
-      adminAction("room:demote", { username: el.adminTarget.value });
-    });
-    el.btnBan.addEventListener("click", ()=>{
-      cursorPulse("ring");
-      adminAction("room:ban", { username: el.adminTarget.value });
-    });
-    el.btnUnban.addEventListener("click", ()=>{
-      cursorPulse("ring");
-      adminAction("room:unban", { username: el.adminTarget.value });
-    });
-    el.btnSetTopic.addEventListener("click", ()=>{
-      cursorPulse("ring");
-      adminAction("room:topic", { topic: el.topicInput.value });
-      el.topicInput.value = "";
-    });
-
-    // --------- Startup ----------
-    async function start(){
-      setNet(false);
-      loadToken();
-
-      // basic status check for UI hint
-      try{
-        const s = await api("/api/status");
-        el.dbg.textContent = "server ok";
-        // no auto-login if no token; show overlay
-      }catch{
-        el.dbg.textContent = "server unreachable";
-      }
-
-      if (!state.token){
-        showOverlay(true);
-        return;
-      }
-
-      // auto session restore
-      showOverlay(true);
-      showLoader(true);
-      try{
-        const meRes = await api("/api/me");
-        state.me = meRes.me;
-        state.publicRooms = meRes.publicRooms || [];
-        renderRooms();
-        await connectSocket();
-        await joinRoom("global");
-        showOverlay(false);
-        renderHeader();
-        toast("Session restored");
-      }catch(e){
-        // token invalid, go back to login
-        saveToken("");
-        showLoader(false);
-        showAuthError(e.message || "Session expired. Please sign in again.");
-        showOverlay(true);
-      }
-    }
-
-    start();
-  </script>
+  <!-- Socket.IO client -->
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="/script.js"></script>
 </body>
 </html>
+
