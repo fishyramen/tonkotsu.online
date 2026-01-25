@@ -1,1121 +1,805 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8"/>
-  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
-  <title>tonkotsu.online</title>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <meta name="color-scheme" content="dark" />
+  <meta name="theme-color" content="#0b0b10" />
+  <title>tonkotsu.online — beta</title>
 
   <style>
     :root{
-      --bg:#0b0d12;
-      --bg2:#07080c;
-      --panel:#0f1219;
-      --panel2:#0d1016;
-
-      --stroke:rgba(255,255,255,.08);
-      --stroke2:rgba(255,255,255,.12);
-
-      --text:#e9eef7;
-      --muted:#9aa6b6;
-
-      --online:#3bd47f;
-      --idle:#ffd166;
-      --dnd:#ff4d4d;
-      --offline:#6d7a8f;
-
-      --danger:#ff4d4d;
-      --warn:#ffd166;
-      --ok:#3bd47f;
-
-      --shadow: 0 20px 80px rgba(0,0,0,.65);
-      --ease: cubic-bezier(.2,.85,.2,1);
-      --fast: 140ms var(--ease);
-      --med: 220ms var(--ease);
-      --slow: 520ms var(--ease);
-
-      --radius: 14px;
-      --h: 36px;
-      --compact: 10px;
-
-      --font: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+      --bg0:#07070b;
+      --bg1:#0b0b10;
+      --bg2:#101019;
+      --card:#12121c;
+      --card2:#171725;
+      --line:rgba(255,255,255,.10);
+      --line2:rgba(255,255,255,.14);
+      --muted:rgba(255,255,255,.65);
+      --muted2:rgba(255,255,255,.50);
+      --text:rgba(255,255,255,.93);
+      --accent:rgba(255,255,255,.14);
+      --accent2:rgba(255,255,255,.20);
+      --danger:rgba(255,60,60,.85);
+      --ok:rgba(90,255,180,.85);
+      --shadow: 0 20px 60px rgba(0,0,0,.55);
+      --shadow2: 0 12px 30px rgba(0,0,0,.45);
+      --radius:18px;
+      --radius2:14px;
+      --pad:14px;
+      --pad2:10px;
+      --font: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
     }
-
     *{ box-sizing:border-box; }
     html,body{ height:100%; }
     body{
       margin:0;
+      font-family:var(--font);
       background:
-        radial-gradient(1200px 700px at 30% 15%, rgba(255,255,255,.06), transparent 55%),
-        radial-gradient(900px 520px at 80% 85%, rgba(255,255,255,.04), transparent 60%),
-        linear-gradient(180deg, var(--bg), var(--bg2));
+        radial-gradient(1200px 700px at 30% 10%, rgba(255,255,255,.08), transparent 60%),
+        radial-gradient(800px 600px at 75% 20%, rgba(255,255,255,.06), transparent 60%),
+        linear-gradient(180deg, var(--bg0), var(--bg1) 40%, var(--bg0));
       color:var(--text);
-      font: 520 13px/1.35 var(--font);
-      overflow:hidden;
-
-      /* custom cursor (can be disabled via settings) */
-      cursor:none;
-      -webkit-font-smoothing: antialiased;
-      -moz-osx-font-smoothing: grayscale;
+      overflow-x:hidden;
     }
 
-    /* dotted stars background */
-    .bg{ position:fixed; inset:0; pointer-events:none; opacity:.95; z-index:-1; }
-    .stars{
-      position:absolute; inset:-250px;
-      background-repeat:repeat;
-      background-size: 280px 280px;
-      opacity:.45;
-      animation: drift 140s linear infinite;
-      background-image:
-        radial-gradient(1px 1px at 20px 24px, rgba(255,255,255,.60), transparent 55%),
-        radial-gradient(1px 1px at 92px 140px, rgba(255,255,255,.52), transparent 55%),
-        radial-gradient(1px 1px at 150px 90px, rgba(255,255,255,.60), transparent 55%),
-        radial-gradient(1px 1px at 214px 230px, rgba(255,255,255,.55), transparent 55%),
-        radial-gradient(1px 1px at 250px 40px, rgba(255,255,255,.70), transparent 55%);
-    }
-    @keyframes drift{ to{ transform: translate3d(-280px,-280px,0);} }
-
-    /* cursor */
-    #cursor,#cursor2{
-      position:fixed; top:0; left:0;
-      pointer-events:none;
-      z-index:9999;
-      transform: translate(-50%,-50%);
-      opacity:0;
-      transition: opacity var(--med);
-      mix-blend-mode: screen;
-    }
-    #cursor{
-      width:10px; height:10px; border-radius:999px;
-      background: rgba(255,255,255,.92);
-      box-shadow: 0 0 0 8px rgba(255,255,255,.06), 0 0 24px rgba(255,255,255,.14);
-      transition: width var(--fast), height var(--fast), opacity var(--med);
-    }
-    #cursor2{
-      width:28px; height:28px; border-radius:999px;
-      border:1px solid rgba(255,255,255,.20);
-      background: rgba(255,255,255,.02);
-      box-shadow: 0 18px 60px rgba(0,0,0,.35);
-      transition: width var(--med), height var(--med), opacity var(--med), border-color var(--fast), transform var(--fast);
-    }
-    .cursorPress #cursor{ width:8px; height:8px; }
-    .cursorPress #cursor2{ width:22px; height:22px; }
-    .cursorHover #cursor2{ width:36px; height:36px; border-color: rgba(255,255,255,.28); }
-    .cursorText  #cursor2{ width:44px; height:44px; border-color: rgba(255,255,255,.25); }
-
-    /* app frame */
-    .shell{ position:fixed; inset:0; display:flex; align-items:center; justify-content:center; padding: 16px; }
-    .frame{
-      width:min(1160px, 100%);
-      height:min(780px, 100%);
-      border-radius: 18px;
-      border:1px solid var(--stroke);
-      background: rgba(12,14,20,.82);
-      backdrop-filter: blur(12px);
-      box-shadow: var(--shadow);
-      overflow:hidden;
-      display:flex;
-      flex-direction:column;
-      animation: frameIn var(--slow) both;
-      position:relative;
-      min-height: 0; /* critical for flex children */
-    }
-    @keyframes frameIn{
-      from{ opacity:0; transform: translateY(10px) scale(.99); filter: blur(2px); }
-      to  { opacity:1; transform: translateY(0) scale(1); filter: blur(0); }
-    }
-
-    /* Top loading overlay (used for transitions) */
-    .loading{
-      position:absolute; inset:0;
-      display:none;
-      align-items:center;
-      justify-content:center;
-      background: rgba(0,0,0,.74);
-      backdrop-filter: blur(12px);
-      z-index: 50;
-      opacity:0;
-      transition: opacity var(--med);
-    }
-    .loading.show{ display:flex; opacity:1; }
-    .loader{
-      width:min(520px, 92vw);
-      border:1px solid var(--stroke);
-      border-radius: 18px;
-      background: rgba(10,12,18,.96);
-      padding: 16px;
-      box-shadow: 0 14px 70px rgba(0,0,0,.65);
-      display:flex;
-      flex-direction:column;
-      gap: 12px;
-      animation: pop var(--med) both;
-    }
-    @keyframes pop{
-      from{ opacity:0; transform: translateY(10px); filter: blur(1px); }
-      to  { opacity:1; transform: translateY(0); filter: blur(0); }
-    }
-    .spin{
-      width:18px; height:18px;
-      border-radius: 999px;
-      border:2px solid rgba(255,255,255,.16);
-      border-top-color: rgba(255,255,255,.78);
-      animation: spin 650ms linear infinite;
-    }
-    @keyframes spin{ to{ transform: rotate(360deg);} }
-    .loaderTitle{ font-weight: 950; font-size: 14px; letter-spacing:.2px; }
-    .loaderSub{ color: var(--muted); font-size: 12px; line-height:1.45; }
-    .loaderBar{
-      height: 10px;
-      border-radius: 999px;
-      background: rgba(255,255,255,.06);
-      border:1px solid rgba(255,255,255,.12);
-      overflow:hidden;
-      position:relative;
-    }
-    .loaderFill{
-      position:absolute; left:0; top:0; bottom:0;
-      width: 35%;
-      background: rgba(255,255,255,.20);
-      border-radius: 999px;
-      animation: loadSweep 1.25s var(--ease) infinite;
-    }
-    @keyframes loadSweep{
-      0%{ transform: translateX(-120%); }
-      100%{ transform: translateX(320%); }
-    }
-
-    /* Layout */
-    .layout{
-      flex:1;
-      min-height:0;
-      display:flex;
-      /* hard guarantee it shows after login */
-      visibility: visible;
-    }
-
-    .colLeft{
-      width: 292px;
-      min-width: 270px;
-      background: rgba(0,0,0,.20);
-      border-right: 1px solid var(--stroke);
-      display:flex;
-      flex-direction:column;
-      min-height:0;
-    }
-    .colMain{
-      flex:1;
-      min-width:0;
-      display:flex;
-      flex-direction:column;
-      min-height:0;
-      background: rgba(0,0,0,.10);
-      position:relative;
-    }
-
-    /* Left header */
-    .leftHeader{
-      height: 50px;
-      display:flex;
-      align-items:center;
-      justify-content:space-between;
-      padding: 0 10px;
-      border-bottom:1px solid var(--stroke);
-      background: rgba(0,0,0,.16);
-      gap: 8px;
-    }
-    .brand{
-      font-weight: 950;
-      letter-spacing:.2px;
-      font-size: 13px;
-      white-space:nowrap;
-      overflow:hidden;
-      text-overflow:ellipsis;
-      max-width: 180px;
-      display:flex;
-      align-items:center;
-      gap:8px;
-    }
-    .betaPill{
-      font-size: 11px;
-      font-weight: 950;
-      color: rgba(255,255,255,.80);
-      border:1px solid rgba(255,255,255,.14);
-      background: rgba(255,255,255,.04);
-      padding: 4px 8px;
-      border-radius: 999px;
-      letter-spacing: .2px;
-    }
-    .leftHeaderRight{ display:flex; gap:8px; }
-
-    /* Buttons / fields */
-    .btn{
-      height: var(--h);
-      padding: 0 12px;
-      border-radius: 12px;
-      border:1px solid var(--stroke2);
-      background: rgba(255,255,255,.04);
-      color:var(--text);
-      cursor:pointer;
-      user-select:none;
-      display:inline-flex;
-      align-items:center;
-      justify-content:center;
-      gap:8px;
-      font-weight: 950;
-      transition: transform var(--fast), background var(--fast), border-color var(--fast), box-shadow var(--fast), filter var(--fast);
-      outline:none;
-      position:relative;
-      overflow:hidden;
-      white-space:nowrap;
-    }
-    .btn:hover{ transform: translateY(-1px); background: rgba(255,255,255,.06); box-shadow: 0 12px 34px rgba(0,0,0,.35); }
-    .btn:active{ transform: translateY(0) scale(.99); }
-    .btn.primary{ background: rgba(255,255,255,.10); border-color: rgba(255,255,255,.18); }
-    .btn.ghost{ background: transparent; border-color: rgba(255,255,255,.10); }
-    .btn.small{ height: 32px; border-radius: 11px; font-size: 12px; padding:0 10px; }
-
-    .iconBtn{
-      width: 36px;
-      height: 36px;
-      padding: 0;
-      border-radius: 12px;
-      display:inline-flex;
-      align-items:center;
-      justify-content:center;
-      font-weight: 950;
-    }
-
-    .field{
-      height: var(--h);
-      width:100%;
-      border-radius: 12px;
-      border:1px solid rgba(255,255,255,.10);
-      background: rgba(255,255,255,.03);
-      color:var(--text);
-      padding: 0 12px;
-      outline:none;
-      transition: border-color var(--fast), background var(--fast), transform var(--fast);
-      font-size: 13px;
-    }
-    .field::placeholder{ color: rgba(154,166,182,.75); }
-    .field:focus{ border-color: rgba(255,255,255,.22); background: rgba(255,255,255,.04); transform: translateY(-1px); }
-
+    .hidden{ display:none !important; }
+    .sr{ position:absolute; left:-9999px; width:1px; height:1px; overflow:hidden; }
+    .row{ display:flex; align-items:center; }
+    .col{ display:flex; flex-direction:column; }
+    .spacer{ flex:1; }
+    .gap6{ gap:6px; } .gap8{ gap:8px; } .gap10{ gap:10px; } .gap12{ gap:12px; } .gap14{ gap:14px; }
     .muted{ color:var(--muted); }
-    .tiny{ font-size:11px; }
-    .sm{ font-size: 12px; }
+    .muted2{ color:var(--muted2); }
+    .mono{ font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; }
 
-    /* Scroll */
-    .scroll{ overflow:auto; min-height:0; }
-    .scroll::-webkit-scrollbar{ width: 10px; }
-    .scroll::-webkit-scrollbar-thumb{
-      background: rgba(255,255,255,.08);
-      border-radius: 99px;
-      border: 3px solid transparent;
-      background-clip: content-box;
-    }
-
-    /* Channel list */
-    .channels{
-      padding: 10px;
+    #appRoot{
+      min-height:100%;
       display:flex;
       flex-direction:column;
-      gap: 8px;
-      min-height:0;
+      padding: 14px;
+      padding-bottom: 64px;
     }
-    .sectionTitle{
-      font-size: 11px;
-      letter-spacing: .22px;
-      color: rgba(255,255,255,.55);
-      font-weight: 950;
-      padding: 8px 6px 4px 6px;
-      text-transform: uppercase;
-    }
-    .item{
-      height: 40px;
-      border-radius: 12px;
-      border:1px solid rgba(255,255,255,.07);
-      background: rgba(255,255,255,.02);
-      display:flex;
-      align-items:center;
-      justify-content:space-between;
-      padding: 0 10px;
-      gap: 10px;
-      cursor:pointer;
-      user-select:none;
-      transition: transform var(--fast), background var(--fast), border-color var(--fast), box-shadow var(--fast);
-      position:relative;
-      overflow:hidden;
-    }
-    .item:hover{
-      transform: translateY(-1px);
-      background: rgba(255,255,255,.03);
-      border-color: rgba(255,255,255,.10);
-      box-shadow: 0 12px 34px rgba(0,0,0,.35);
-    }
-    .item.active{
-      background: rgba(255,255,255,.06);
-      border-color: rgba(255,255,255,.14);
-    }
-    .left{ display:flex; align-items:center; gap: 10px; min-width:0; }
-    .hash{
-      width: 24px;
-      height: 24px;
-      border-radius: 9px;
-      background: rgba(255,255,255,.06);
-      display:flex;
-      align-items:center;
-      justify-content:center;
-      font-weight: 950;
-      color: rgba(255,255,255,.85);
-      flex:0 0 auto;
-      font-size: 12px;
-    }
-    .name{ font-weight: 950; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-size: 13px; }
-    .sub{ font-size: 11px; color: var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-top:2px; }
-    .nameCol{ min-width:0; display:flex; flex-direction:column; }
-
-    /* Badges */
-    .badge{
-      min-width: 20px;
-      height: 18px;
-      padding: 0 6px;
-      border-radius: 7px;
-      background: var(--danger);
-      color:#0b0d10;
-      font-weight: 950;
-      font-size: 11px;
-      display:none;
-      align-items:center;
-      justify-content:center;
-      line-height:18px;
-      box-shadow: 0 10px 30px rgba(0,0,0,.30);
-      animation: pop2 var(--med) both;
-    }
-    .badge.show{ display:flex; }
-    @keyframes pop2{ from{ opacity:0; transform:scale(.86);} to{ opacity:1; transform:scale(1);} }
-
-    /* Online list */
-    .onlineWrap{
-      border-top:1px solid var(--stroke);
-      padding: 10px;
+    .shell{
+      width:min(1120px, 100%);
+      margin:0 auto;
       display:flex;
       flex-direction:column;
-      gap: 8px;
-      min-height: 0;
-      max-height: 200px;
-    }
-    .onlineRow{
-      height: 36px;
-      border-radius: 12px;
-      border:1px solid rgba(255,255,255,.06);
-      background: rgba(255,255,255,.02);
-      display:flex;
-      align-items:center;
-      justify-content:space-between;
-      padding: 0 10px;
-      cursor:pointer;
-      user-select:none;
-      transition: transform var(--fast), background var(--fast), border-color var(--fast), box-shadow var(--fast);
-      gap: 10px;
-    }
-    .onlineRow:hover{
-      transform: translateY(-1px);
-      background: rgba(255,255,255,.03);
-      border-color: rgba(255,255,255,.10);
-      box-shadow: 0 12px 34px rgba(0,0,0,.30);
+      gap:12px;
     }
 
-    /* Dots */
-    .dot{
-      width:10px; height:10px;
-      border-radius: 99px;
-      border:1px solid rgba(255,255,255,.14);
-      background: rgba(255,255,255,.18);
-      flex:0 0 auto;
-    }
-    .dot.online{ background: var(--online); box-shadow: 0 0 0 3px rgba(59,212,127,.12); }
-    .dot.idle{ background: var(--idle); box-shadow: 0 0 0 3px rgba(255,209,102,.12); }
-    .dot.dnd{ background: var(--dnd); box-shadow: 0 0 0 3px rgba(255,77,77,.12); }
-    .dot.offline{ background: var(--offline); box-shadow: 0 0 0 3px rgba(109,122,143,.12); }
-
-    /* Main header */
     .topbar{
-      height: 52px;
-      border-bottom:1px solid var(--stroke);
-      background: rgba(0,0,0,.16);
-      display:flex;
-      align-items:center;
-      justify-content:space-between;
-      padding: 0 12px;
-      gap: 12px;
-    }
-    .topic{
-      min-width:0;
-      display:flex;
-      flex-direction:column;
-      gap:2px;
-    }
-    .topicRow{
-      display:flex;
-      align-items:center;
-      gap: 10px;
-      min-width:0;
-    }
-    .topicTitle{
-      font-weight: 950;
-      white-space:nowrap;
-      overflow:hidden;
-      text-overflow:ellipsis;
-      font-size: 14px;
-      letter-spacing:.2px;
-    }
-    .topicSub{
-      font-size:12px;
-      color:var(--muted);
-      white-space:nowrap;
-      overflow:hidden;
-      text-overflow:ellipsis;
-    }
-
-    /* Manage button near group name (shown by JS only for group view + owner/mod perms) */
-    .manageBtn{ display:none; }
-    .manageBtn.show{ display:inline-flex; }
-
-    /* Right area */
-    .rightTop{ display:flex; align-items:center; gap: 10px; flex:0 0 auto; }
-
-    /* Inbox pill (better) */
-    .inboxBtnWrap{
-      position:relative;
-      display:none; /* hidden for guests, shown for accounts */
-    }
-    .inboxPill{
-      height: 36px;
-      border-radius: 999px;
-      border:1px solid rgba(255,255,255,.14);
-      background: rgba(255,255,255,.04);
-      padding: 0 14px;
-      display:inline-flex;
-      align-items:center;
-      gap: 10px;
-      font-weight: 950;
-      cursor:pointer;
-      transition: transform var(--fast), background var(--fast), border-color var(--fast), box-shadow var(--fast);
-      user-select:none;
-    }
-    .inboxPill:hover{
-      transform: translateY(-1px);
-      background: rgba(255,255,255,.06);
-      border-color: rgba(255,255,255,.18);
-      box-shadow: 0 12px 34px rgba(0,0,0,.35);
-    }
-    .inboxDot{
-      width:10px; height:10px; border-radius:99px;
-      background: rgba(255,255,255,.25);
-      border:1px solid rgba(255,255,255,.18);
-    }
-    .inboxBadgeMini{
-      position:absolute;
-      top:-6px; right:-6px;
-      min-width:18px;
-      height:18px;
-      border-radius:9px;
-      background: var(--danger);
-      color:#0b0d10;
-      font-weight: 950;
-      font-size: 11px;
-      display:none;
-      align-items:center;
-      justify-content:center;
-      padding: 0 6px;
-      box-shadow: 0 10px 24px rgba(0,0,0,.35);
-    }
-    .inboxBadgeMini.show{ display:flex; }
-
-    /* Account pill */
-    .mePill{
-      height: 36px;
-      border-radius: 999px;
-      border:1px solid rgba(255,255,255,.10);
-      background: rgba(255,255,255,.03);
-      padding: 0 12px;
-      display:none;
-      align-items:center;
-      gap: 10px;
-      cursor:pointer;
-      user-select:none;
-      transition: transform var(--fast), background var(--fast), border-color var(--fast), box-shadow var(--fast);
-      max-width: 320px;
-    }
-    .mePill:hover{
-      transform: translateY(-1px);
-      background: rgba(255,255,255,.05);
-      box-shadow: 0 12px 34px rgba(0,0,0,.35);
-    }
-    .meName{
-      font-weight: 950;
-      white-space:nowrap;
-      overflow:hidden;
-      text-overflow:ellipsis;
-      max-width: 210px;
-      font-size: 13px;
-    }
-    .caret{ opacity:.8; font-weight: 950; }
-
-    /* Chat area */
-    .chat{ flex:1; min-height:0; padding: 12px; overflow:auto; }
-    .msg{ margin-bottom: 10px; display:flex; }
-    .bubble{
-      max-width: 76%;
-      border-radius: 14px;
-      border:1px solid rgba(255,255,255,.07);
-      background: rgba(255,255,255,.02);
-      padding: 10px 11px;
-      box-shadow: 0 10px 30px rgba(0,0,0,.25);
-      transition: transform var(--fast), background var(--fast), border-color var(--fast), box-shadow var(--fast);
-      animation: msgIn var(--med) both;
-    }
-    @keyframes msgIn{
-      from{ opacity:0; transform: translateY(8px); filter: blur(1px); }
-      to{ opacity:1; transform: translateY(0); filter: blur(0); }
-    }
-    .bubble:hover{
-      transform: translateY(-1px);
-      background: rgba(255,255,255,.03);
-      border-color: rgba(255,255,255,.10);
-      box-shadow: 0 14px 42px rgba(0,0,0,.35);
-    }
-    .meta{
-      display:flex; align-items:center; justify-content:space-between;
-      gap: 10px; margin-bottom: 6px;
-    }
-    .user{
-      font-weight: 950;
-      cursor:pointer;
-      user-select:none;
-      transition: transform var(--fast);
-      font-size: 13px;
-    }
-    .user:hover{ transform: translateY(-1px); }
-    .time{ font-size:11px; color:var(--muted); flex:0 0 auto; }
-    .text{ white-space: pre-wrap; word-break: break-word; font-size: 13px; }
-    .mention{ color: var(--danger); font-weight: 950; }
-
-    /* Composer */
-    .composer{
-      border-top:1px solid var(--stroke);
-      background: rgba(0,0,0,.16);
-      padding: 10px 12px 12px 12px;
-      display:flex;
-      flex-direction:column;
-      gap: 8px;
-    }
-    .row{ display:flex; gap: 10px; align-items:stretch; }
-    .row .field{ flex:1; }
-    .row .btn{ width: 118px; }
-
-    /* Cooldown bar (dynamic) */
-    .cooldownWrap{
-      display:flex;
-      align-items:center;
-      gap: 10px;
-      flex-wrap:wrap;
-    }
-    .coolBar{
-      height: 10px;
-      flex: 1 1 220px;
-      border-radius: 999px;
-      background: rgba(255,255,255,.06);
-      border:1px solid rgba(255,255,255,.12);
-      overflow:hidden;
-      position:relative;
-      min-width: 160px;
-    }
-    .coolFill{
-      position:absolute; left:0; top:0; bottom:0;
-      width: 0%;
-      background: rgba(255,255,255,.18);
-      transition: width var(--fast);
-    }
-    .coolWarn .coolFill{ background: rgba(255,77,77,.22); }
-    .shake{
-      animation: shake 360ms var(--ease) both;
-    }
-    @keyframes shake{
-      0%{ transform: translateX(0); }
-      20%{ transform: translateX(-4px); }
-      40%{ transform: translateX(4px); }
-      60%{ transform: translateX(-3px); }
-      80%{ transform: translateX(3px); }
-      100%{ transform: translateX(0); }
-    }
-
-    /* Footer */
-    .footer{
-      height: 40px;
-      border-top: 1px solid var(--stroke);
-      background: rgba(0,0,0,.16);
-      display:flex;
-      align-items:center;
-      justify-content:space-between;
-      padding: 0 12px;
-      font-size: 11px;
-      color: rgba(255,255,255,.62);
-      gap: 12px;
-    }
-    .footer a{ color: rgba(255,255,255,.78); text-decoration:none; }
-    .footer a:hover{ text-decoration:underline; }
-    .footerLinks{ display:flex; gap: 12px; flex-wrap:wrap; }
-
-    /* Login overlay */
-    .loginOverlay{
-      position:absolute; inset:0;
-      z-index: 60;
-      background: rgba(0,0,0,.92);
-      display:flex;
-      align-items:center;
-      justify-content:center;
-      padding: 16px;
-      opacity:1;
-      transition: opacity var(--med);
-    }
-    .loginOverlay.hidden{ opacity:0; pointer-events:none; }
-
-    .loginGrid{
-      width: min(980px, 96vw);
-      display:grid;
-      grid-template-columns: 1.05fr .95fr;
-      gap: 14px;
-      align-items:stretch;
-    }
-    @media (max-width: 860px){
-      .loginGrid{ grid-template-columns: 1fr; }
-    }
-
-    .loginBox{
-      border:1px solid var(--stroke);
-      border-radius: 18px;
-      background: rgba(12,14,20,.92);
-      box-shadow: 0 18px 70px rgba(0,0,0,.60);
-      padding: 16px;
-      display:flex;
-      flex-direction:column;
-      gap: 12px;
-      position:relative;
-      overflow:hidden;
-      min-height: 340px;
-    }
-    .loginStars{
-      position:absolute; inset:-220px;
-      background-repeat:repeat;
-      background-size: 260px 260px;
-      opacity:.55;
-      animation: drift2 160s linear infinite;
-      background-image:
-        radial-gradient(1px 1px at 22px 28px, rgba(255,255,255,.60), transparent 55%),
-        radial-gradient(1px 1px at 68px 160px, rgba(255,255,255,.52), transparent 55%),
-        radial-gradient(1px 1px at 140px 86px, rgba(255,255,255,.60), transparent 55%),
-        radial-gradient(1px 1px at 200px 220px, rgba(255,255,255,.55), transparent 55%),
-        radial-gradient(1px 1px at 242px 44px, rgba(255,255,255,.70), transparent 55%);
-    }
-    @keyframes drift2{ to{ transform: translate3d(-260px,-260px,0);} }
-    .loginInner{ position:relative; z-index:1; display:flex; flex-direction:column; gap: 12px; }
-    .loginTitleRow{
-      display:flex;
-      align-items:center;
-      justify-content:space-between;
-      gap: 10px;
-    }
-    .loginTitle{
-      font-weight: 950;
-      font-size: 16px;
-      letter-spacing:.2px;
-      display:flex;
-      align-items:center;
-      gap: 10px;
-      white-space:nowrap;
-    }
-
-    .card{
-      border:1px solid rgba(255,255,255,.08);
-      border-radius: 16px;
-      background: rgba(255,255,255,.02);
-      padding: 12px;
-    }
-    .cardTitle{ font-weight: 950; margin-bottom: 8px; }
-    .cardList{ display:flex; flex-direction:column; gap: 8px; }
-    .line{
-      display:flex;
-      align-items:flex-start;
-      justify-content:space-between;
-      gap: 10px;
-    }
-    .tag{
-      font-size: 11px;
-      font-weight: 950;
-      padding: 4px 8px;
-      border-radius: 999px;
-      border:1px solid rgba(255,255,255,.12);
-      background: rgba(255,255,255,.03);
-      color: rgba(255,255,255,.80);
-      flex: 0 0 auto;
-    }
-
-    /* Password eye */
-    .pwWrap{ position:relative; }
-    .field.pw{ padding-right: 58px; }
-    .eye{
-      position:absolute;
-      right: 8px;
-      top:50%;
-      transform: translateY(-50%);
-      height: 30px;
-      width: 48px;
-      border-radius: 12px;
-      border:1px solid rgba(255,255,255,.10);
-      background: rgba(255,255,255,.03);
-      display:flex;
-      align-items:center;
-      justify-content:center;
-      cursor:pointer;
-      user-select:none;
-      transition: transform var(--fast), background var(--fast);
-    }
-    .eye:hover{ transform: translateY(-50%) translateY(-1px); background: rgba(255,255,255,.05); }
-
-    /* Modal */
-    .modalBack{
-      position:fixed; inset:0;
-      z-index: 70;
-      display:none;
-      align-items:center;
-      justify-content:center;
-      padding: 16px;
-      background: rgba(0,0,0,.72);
-      backdrop-filter: blur(10px);
-      opacity:0;
-      transition: opacity var(--med);
-    }
-    .modalBack.show{ display:flex; opacity:1; }
-    .modal{
-      width:min(760px, 96vw);
-      max-height: min(78vh, 760px);
-      overflow:auto;
-      border-radius: 18px;
-      border:1px solid var(--stroke);
-      background: rgba(12,14,20,.94);
-      box-shadow: 0 18px 70px rgba(0,0,0,.60);
-      padding: 12px;
-      display:flex;
-      flex-direction:column;
-      gap: 10px;
-      animation: pop var(--med) both;
-    }
-    .modalTop{
-      display:flex;
-      align-items:center;
-      justify-content:space-between;
-      gap: 10px;
       position:sticky;
       top:0;
-      background: rgba(12,14,20,.94);
-      padding-bottom: 8px;
-      z-index: 2;
+      z-index:50;
+      backdrop-filter: blur(12px);
+      background: rgba(10,10,15,.55);
+      border:1px solid var(--line);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow2);
+      padding: 10px 12px;
     }
-    .modalTitle{ font-weight: 950; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .brand{
+      font-weight:900;
+      letter-spacing:.3px;
+      font-size: 16px;
+    }
+    .brand .beta{
+      font-weight:800;
+      font-size: 12px;
+      opacity:.75;
+      margin-left:8px;
+      padding:2px 8px;
+      border-radius:999px;
+      border:1px solid var(--line);
+      background: rgba(255,255,255,.06);
+    }
 
-    /* Ripple */
-    .ripple{
-      position:absolute;
-      width: 12px; height: 12px;
+    .btn{
+      border:1px solid var(--line2);
+      background: rgba(255,255,255,.08);
+      color:var(--text);
+      border-radius: 14px;
+      padding: 10px 12px;
+      font-weight:800;
+      letter-spacing:.2px;
+      display:inline-flex;
+      align-items:center;
+      justify-content:center;
+      gap:8px;
+      cursor:pointer;
+      user-select:none;
+      transition: transform .08s ease, background .15s ease, border-color .15s ease;
+    }
+    .btn:hover{ background: rgba(255,255,255,.12); border-color: rgba(255,255,255,.18); }
+    .btn:active{ transform: translateY(1px); }
+    .btn:disabled{ opacity:.55; cursor:not-allowed; transform:none; }
+    .btnPrimary{ background: rgba(255,255,255,.16); border-color: rgba(255,255,255,.20); }
+    .btnPrimary:hover{ background: rgba(255,255,255,.22); }
+    .btnGhost{ background: transparent; border-color: rgba(255,255,255,.12); }
+    .btnDanger{ background: rgba(255,60,60,.12); border-color: rgba(255,60,60,.25); }
+    .btnDanger:hover{ background: rgba(255,60,60,.18); }
+    .btnSmall{ padding: 8px 10px; border-radius: 12px; font-size: 13px; }
+    .btnIcon{ width:40px; height:40px; padding:0; border-radius: 14px; }
+
+    #inboxBtn{
+      position:relative;
+      padding-left: 14px;
+      padding-right: 14px;
+      min-width: 112px;
+      justify-content:space-between;
+    }
+    #inboxBtn .inboxLeft{ display:flex; align-items:center; gap:10px; }
+    .dotIcon{
+      width:10px; height:10px; border-radius:999px;
+      background: rgba(255,255,255,.75);
+      box-shadow: 0 0 12px rgba(0,0,0,.35);
+    }
+    #inboxBadge{
+      display:none;
+      min-width: 24px;
+      height: 20px;
+      padding: 0 7px;
       border-radius: 999px;
-      background: rgba(255,255,255,.18);
-      transform: translate(-50%,-50%);
-      pointer-events:none;
-      animation: ripple 520ms var(--ease) both;
-    }
-    @keyframes ripple{
-      from{ opacity:.6; transform: translate(-50%,-50%) scale(1); }
-      to{ opacity:0; transform: translate(-50%,-50%) scale(22); }
+      border: 1px solid rgba(255,255,255,.18);
+      background: rgba(0,0,0,.20);
+      font-size: 12px;
+      font-weight: 900;
+      align-items:center;
+      justify-content:center;
     }
 
-    /* Reduced motion */
-    @media (prefers-reduced-motion: reduce){
-      *{ animation:none !important; transition:none !important; }
-      body{ cursor:auto; }
-      #cursor,#cursor2{ display:none !important; }
+    .viewCard{
+      border:1px solid var(--line);
+      background: rgba(18,18,28,.72);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow2);
+      overflow:hidden;
+    }
+    .viewHead{
+      padding: 14px 14px 10px;
+      border-bottom:1px solid var(--line);
+      background: rgba(255,255,255,.03);
+    }
+    .viewTitle{ font-size: 18px; font-weight: 900; letter-spacing:.2px; }
+    .viewSub{ margin-top:4px; font-size: 13.5px; color: var(--muted); line-height:1.35; }
+
+    #loginView .panel{
+      padding: 14px;
+      display:grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+    }
+    @media (max-width: 860px){ #loginView .panel{ grid-template-columns: 1fr; } }
+    .loginCard{
+      border:1px solid var(--line);
+      background: rgba(255,255,255,.03);
+      border-radius: var(--radius);
+      padding: 14px;
+    }
+    .loginCard h2{ margin:0 0 8px; font-size: 18px; font-weight: 900; }
+    .loginCard p{ margin:0 0 12px; color: var(--muted); font-size: 14px; line-height:1.4; }
+    .field{ display:flex; flex-direction:column; gap:8px; margin-bottom: 10px; }
+    .label{ font-size: 13px; font-weight: 800; color: rgba(255,255,255,.78); }
+    .input{
+      border:1px solid var(--line2);
+      background: rgba(0,0,0,.20);
+      color: var(--text);
+      border-radius: 14px;
+      padding: 12px 12px;
+      font-size: 15px;
+      outline:none;
+      transition: border-color .15s ease, background .15s ease;
+    }
+    .input:focus{ border-color: rgba(255,255,255,.22); background: rgba(0,0,0,.26); }
+    .loginActions{ display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top: 8px; }
+    #loginError{ min-height: 18px; margin-top: 8px; color: rgba(255,120,120,.92); font-weight: 800; font-size: 13px; }
+
+    #appView{ display:none; }
+    .grid{ display:grid; grid-template-columns: 360px 1fr; gap: 12px; }
+    @media (max-width: 980px){ .grid{ grid-template-columns: 1fr; } }
+
+    .side{ padding: 14px; display:flex; flex-direction:column; gap:12px; }
+    .profileCard{
+      border:1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 12px;
+      background: rgba(255,255,255,.03);
+      display:flex;
+      flex-direction:column;
+      gap:10px;
+    }
+    .profileTop{ display:flex; align-items:center; gap:12px; }
+    .avatar{
+      width:46px; height:46px;
+      border-radius: 16px;
+      border:1px solid var(--line);
+      background:
+        radial-gradient(20px 20px at 30% 30%, rgba(255,255,255,.18), transparent 60%),
+        rgba(255,255,255,.06);
+      box-shadow: 0 12px 30px rgba(0,0,0,.35);
+    }
+    .pName{ font-weight: 950; font-size: 16px; letter-spacing:.2px; line-height:1.1; }
+    .pMeta{ font-size: 13px; color: var(--muted); margin-top:2px; }
+    .badgeRow{ display:flex; flex-wrap:wrap; gap:8px; }
+    .badge{
+      padding: 6px 10px;
+      border-radius: 999px;
+      border:1px solid var(--line);
+      background: rgba(255,255,255,.05);
+      font-size: 12px;
+      font-weight: 900;
+      letter-spacing:.15px;
+    }
+    .navCard{
+      border:1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 12px;
+      background: rgba(255,255,255,.03);
+      display:flex;
+      flex-direction:column;
+      gap:10px;
+    }
+    .navTitle{ font-weight: 950; font-size: 14px; opacity:.92; letter-spacing:.2px; }
+
+    .main{ padding: 14px; display:flex; flex-direction:column; gap: 12px; }
+    .chatHeader{
+      display:flex;
+      align-items:center;
+      gap:10px;
+      padding: 12px;
+      border:1px solid var(--line);
+      border-radius: var(--radius);
+      background: rgba(255,255,255,.03);
+    }
+    .chatTitle{ font-weight: 950; font-size: 16px; letter-spacing:.2px; }
+    .chatPill{
+      margin-left:8px;
+      font-size: 12px;
+      font-weight: 900;
+      opacity:.80;
+      padding: 3px 9px;
+      border-radius: 999px;
+      border:1px solid var(--line);
+      background: rgba(255,255,255,.05);
+    }
+    .chatBody{
+      border:1px solid var(--line);
+      border-radius: var(--radius);
+      background: rgba(255,255,255,.02);
+      min-height: 520px;
+      display:flex;
+      flex-direction:column;
+      overflow:hidden;
+    }
+    #globalList{
+      flex:1;
+      overflow:auto;
+      padding: 12px;
+      display:flex;
+      flex-direction:column;
+      gap:10px;
+      scroll-behavior:smooth;
+    }
+    .gmsg{
+      border:1px solid rgba(255,255,255,.08);
+      background: rgba(0,0,0,.18);
+      border-radius: 16px;
+      padding: 10px 12px;
+      box-shadow: 0 10px 24px rgba(0,0,0,.20);
+    }
+    .gmsgTop{ display:flex; align-items:center; gap:10px; margin-bottom: 6px; }
+    .gmsgUser{ font-weight: 950; letter-spacing:.15px; font-size: 14px; }
+    .gmsgTime{ margin-left:auto; font-size: 12px; color: var(--muted2); font-weight: 900; }
+    .gmsgText{ font-size: 14.5px; line-height: 1.35; white-space: pre-wrap; word-break: break-word; }
+
+    .embed{
+      margin-top: 10px;
+      border:1px solid rgba(255,255,255,.10);
+      border-radius: 14px;
+      background: rgba(255,255,255,.04);
+      display:flex;
+      overflow:hidden;
+      max-width: 640px;
+    }
+    .embedLeft{ width:10px; background: rgba(255,255,255,.20); }
+    .embedBody{ padding: 10px 10px; display:flex; flex-direction:column; gap:4px; }
+    .embedTitle{ font-size: 12px; font-weight: 950; opacity:.85; }
+    .embedLink{
+      font-size: 13px;
+      color: rgba(255,255,255,.92);
+      opacity:.9;
+      text-decoration: none;
+      border-bottom: 1px dashed rgba(255,255,255,.25);
+      width: fit-content;
+    }
+    .embedLink:hover{ opacity:1; }
+
+    .chatComposer{
+      padding: 12px;
+      border-top: 1px solid var(--line);
+      background: rgba(255,255,255,.03);
+      display:flex;
+      gap:10px;
+      align-items:center;
+    }
+    #globalInput{
+      flex:1;
+      border:1px solid var(--line2);
+      background: rgba(0,0,0,.22);
+      color: var(--text);
+      border-radius: 16px;
+      padding: 12px 12px;
+      font-size: 15px;
+      outline:none;
+    }
+    #globalInput:focus{ border-color: rgba(255,255,255,.22); }
+
+    #cooldownBarWrap{
+      position: fixed;
+      left: 50%;
+      transform: translateX(-50%);
+      bottom: 18px;
+      width: min(560px, 92vw);
+      height: 10px;
+      border-radius: 999px;
+      background: rgba(255,255,255,.08);
+      border:1px solid rgba(255,255,255,.10);
+      box-shadow: var(--shadow2);
+      overflow: hidden;
+      backdrop-filter: blur(10px);
+      display:none;
+      z-index: 200;
+    }
+    #cooldownBarWrap.show{ display:block; }
+    #cooldownBar{ height:100%; width:0%; background: rgba(255,255,255,.75); border-radius: 999px; transform-origin:left; }
+    #cooldownBarWrap.shake{
+      animation: cdshake .35s linear;
+      background: rgba(255,0,0,.20);
+      border-color: rgba(255,0,0,.25);
+    }
+    @keyframes cdshake{
+      0%{ transform: translateX(-50%) translateX(0); }
+      20%{ transform: translateX(-50%) translateX(-8px); }
+      40%{ transform: translateX(-50%) translateX(8px); }
+      60%{ transform: translateX(-50%) translateX(-6px); }
+      80%{ transform: translateX(-50%) translateX(6px); }
+      100%{ transform: translateX(-50%) translateX(0); }
     }
 
-    /* Mobile UX mode helper (JS toggles body.mobileUX) */
-    body.mobileUX .shell{ padding: 0; }
-    body.mobileUX .frame{
-      width:100%;
-      height:100%;
-      border-radius: 0;
-      border-left:none;
-      border-right:none;
-      border-top:none;
-      border-bottom:none;
-    }
-    body.mobileUX .colLeft{
-      position:absolute;
-      left:0; top:0; bottom:0;
-      transform: translateX(-105%);
-      transition: transform var(--med);
-      z-index: 40;
-      width: 86vw;
-      max-width: 340px;
-      box-shadow: 0 20px 80px rgba(0,0,0,.65);
-      background: rgba(8,10,14,.92);
+    /* Loading overlay: always auto-hides in script.js, cannot trap login */
+    #loadingOverlay{
+      position: fixed;
+      inset: 0;
+      z-index: 9999;
+      display:none;
+      align-items:center;
+      justify-content:center;
+      padding: 18px;
+      background: rgba(0,0,0,.55);
       backdrop-filter: blur(10px);
     }
-    body.mobileUX .colLeft.open{ transform: translateX(0); }
-    body.mobileUX .topbar{ padding-left: 10px; }
-    .mobileNavBtn{
+    #loadingOverlay.show{ display:flex; }
+    .loadingCard{
+      width: min(520px, 92vw);
+      border-radius: 18px;
+      border: 1px solid rgba(255,255,255,.14);
+      background: rgba(18,18,28,.92);
+      box-shadow: var(--shadow);
+      padding: 16px 16px;
+      display:flex;
+      align-items:center;
+      gap: 14px;
+    }
+    .loadingSpinner{
+      width: 42px; height: 42px;
+      border-radius: 999px;
+      border: 3px solid rgba(255,255,255,.14);
+      border-top-color: rgba(255,255,255,.70);
+      animation: spin 1s linear infinite;
+      flex: 0 0 auto;
+    }
+    @keyframes spin{ to{ transform: rotate(360deg); } }
+    .loadingLabel{ font-size: 16px; font-weight: 950; letter-spacing:.2px; }
+    .loadingDetail{ font-size: 13px; color: var(--muted); margin-top:4px; line-height:1.35; }
+
+    #toastHost{
+      position: fixed;
+      top: 14px;
+      right: 14px;
+      z-index: 10000;
+      display:flex;
+      flex-direction:column;
+      gap:10px;
+      width: min(420px, 92vw);
+    }
+    .toast{
+      border:1px solid rgba(255,255,255,.12);
+      background: rgba(18,18,28,.92);
+      box-shadow: var(--shadow2);
+      border-radius: 16px;
+      padding: 10px 12px;
+      font-size: 13.5px;
+      font-weight: 800;
+      opacity: 0;
+      transform: translateY(-6px);
+      transition: opacity .18s ease, transform .18s ease;
+    }
+    .toast.show{ opacity: 1; transform: translateY(0); }
+    .toast-error{ border-color: rgba(255,80,80,.25); }
+    .toast-info{ border-color: rgba(255,255,255,.14); }
+
+    .modalHost{
+      position: fixed;
+      inset: 0;
+      z-index: 99999;
       display:none;
+      align-items:center;
+      justify-content:center;
+      padding: 16px;
     }
-    body.mobileUX .mobileNavBtn{
-      display:inline-flex;
+    .modalHost.show{ display:flex; }
+    .modalBackdrop{
+      position:absolute;
+      inset:0;
+      background: rgba(0,0,0,.65);
+      backdrop-filter: blur(10px);
     }
+    .modalCard{
+      position:relative;
+      width:min(860px, 96vw);
+      border-radius: 18px;
+      border: 1px solid rgba(255,255,255,.14);
+      background: rgba(18,18,28,.94);
+      box-shadow: var(--shadow);
+      overflow:hidden;
+    }
+    .modalHead{
+      padding: 14px 14px 10px;
+      border-bottom:1px solid rgba(255,255,255,.10);
+      display:flex;
+      align-items:center;
+      gap:10px;
+      background: rgba(255,255,255,.03);
+    }
+    .modalTitle{ font-size: 16px; font-weight: 950; letter-spacing:.2px; }
+    .modalBody{ padding: 14px; display:flex; flex-direction:column; gap: 12px; }
+    .modalGrid{ display:grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    @media (max-width: 860px){ .modalGrid{ grid-template-columns: 1fr; } }
+    .subCard{
+      border:1px solid rgba(255,255,255,.10);
+      background: rgba(0,0,0,.20);
+      border-radius: 16px;
+      padding: 12px;
+      display:flex;
+      flex-direction:column;
+      gap: 10px;
+    }
+    .subTitle{ font-weight: 950; letter-spacing:.2px; font-size: 14px; opacity:.92; }
+    .subText{ font-size: 13.5px; color: var(--muted); line-height:1.35; }
+    .divider{ height:1px; background: rgba(255,255,255,.10); }
+
+    .sliderRow{ display:flex; align-items:center; gap:10px; }
+    input[type="range"]{ width:100%; accent-color: rgba(255,255,255,.60); }
+    .pill{
+      padding: 6px 10px;
+      border-radius: 999px;
+      border:1px solid rgba(255,255,255,.14);
+      background: rgba(255,255,255,.06);
+      font-size: 12px;
+      font-weight: 950;
+      letter-spacing:.2px;
+      min-width: 54px;
+      text-align:center;
+    }
+
+    body.mobileUX #appRoot{ padding: 10px; }
+    body.mobileUX .grid{ grid-template-columns: 1fr; }
+    body.mobileUX .chatBody{ min-height: 520px; }
   </style>
 </head>
 
 <body>
-  <div class="bg" aria-hidden="true"><div class="stars"></div></div>
+  <div id="toastHost" aria-live="polite" aria-atomic="true"></div>
 
-  <div id="cursor"></div>
-  <div id="cursor2"></div>
-
-  <div class="shell">
-    <div class="frame" id="frame">
-
-      <!-- Transition loading overlay -->
-      <div class="loading" id="loading" aria-hidden="true">
-        <div class="loader">
-          <div style="display:flex;align-items:center;gap:10px">
-            <div class="spin"></div>
-            <div class="loaderTitle" id="loaderTitle">Loading</div>
-          </div>
-          <div class="loaderSub" id="loaderSub">syncing…</div>
-          <div class="loaderBar" aria-hidden="true"><div class="loaderFill"></div></div>
-          <div class="tiny muted" id="loaderFoot">Please don’t refresh while syncing.</div>
-        </div>
-      </div>
-
-      <!-- Login overlay -->
-      <div class="loginOverlay" id="loginOverlay">
-        <div class="loginGrid">
-          <!-- Login -->
-          <div class="loginBox">
-            <div class="loginStars" aria-hidden="true"></div>
-            <div class="loginInner">
-              <div class="loginTitleRow">
-                <div class="loginTitle">
-                  tonkotsu.online <span class="betaPill">BETA</span>
-                </div>
-                <div class="tag" title="Public status page">/status</div>
-              </div>
-
-              <div class="card">
-                <div class="cardTitle">Log in / Create account</div>
-
-                <div style="display:flex;gap:10px;flex-wrap:wrap">
-                  <div style="flex:1;min-width:220px">
-                    <div class="muted tiny" style="margin-bottom:6px">Username (letters/numbers only, 4–20)</div>
-                    <input class="field" id="username" placeholder="yourname" autocomplete="username"/>
-                  </div>
-                  <div style="flex:1;min-width:220px">
-                    <div class="muted tiny" style="margin-bottom:6px">Password (letters/numbers only, 6–64 recommended)</div>
-                    <div class="pwWrap">
-                      <input class="field pw" id="password" type="password" placeholder="••••••" autocomplete="current-password"/>
-                      <div class="eye" id="togglePass" title="Show/Hide">👁</div>
-                    </div>
-                  </div>
-                </div>
-
-                <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px">
-                  <button class="btn primary" id="joinBtn" style="flex:1;min-width:220px">Log in / Create</button>
-                  <button class="btn" id="guestBtn" style="flex:1;min-width:220px">Guest</button>
-                </div>
-
-                <div class="muted tiny" style="margin-top:10px;line-height:1.55">
-                  • Guests have a slower cooldown and no DMs / no groups / no inbox.<br/>
-                  • Your session can resume automatically if you enable it in Settings (after login).
-                </div>
-              </div>
-
-              <div class="card" id="trustHintCard">
-                <div class="cardTitle">Trust score (how it works)</div>
-                <div class="muted tiny" style="line-height:1.6" id="trustHint">
-                  Raise: account age, clean chat history, being active without spam, getting friends, joining groups.<br/>
-                  Lower: repeated spam, repeated identical messages, link spam, flagged content, frequent “new device/session” logins.<br/>
-                  <span class="tiny muted">Note: this affects cooldown + link privileges for non-global chats.</span>
-                </div>
-              </div>
-
-            </div>
-          </div>
-
-          <!-- What's New / Beta notes -->
-          <div class="loginBox">
-            <div class="loginStars" aria-hidden="true" style="opacity:.30"></div>
-            <div class="loginInner">
-              <div class="card">
-                <div class="cardTitle">What’s new</div>
-                <div class="cardList" id="whatsNewList">
-                  <div class="line">
-                    <div style="min-width:0">
-                      <div style="font-weight:950">New: What’s New panel</div>
-                      <div class="muted tiny">You’re reading it right now.</div>
-                    </div>
-                    <div class="tag">2026-01-24</div>
-                  </div>
-
-                  <div class="line">
-                    <div style="min-width:0">
-                      <div style="font-weight:950">Profile upgrades</div>
-                      <div class="muted tiny">Badges, stats, customization (bio + accent color).</div>
-                    </div>
-                    <div class="tag">2026-01-24</div>
-                  </div>
-
-                  <div class="line">
-                    <div style="min-width:0">
-                      <div style="font-weight:950">Mobile UX mode</div>
-                      <div class="muted tiny">Swipe-style layout behavior + compact spacing.</div>
-                    </div>
-                    <div class="tag">2026-01-24</div>
-                  </div>
-
-                  <div class="line">
-                    <div style="min-width:0">
-                      <div style="font-weight:950">Public status page</div>
-                      <div class="muted tiny">Server uptime + online count at <b style="color:var(--text)">/status</b>.</div>
-                    </div>
-                    <div class="tag">2026-01-24</div>
-                  </div>
-                </div>
-
-                <div class="muted tiny" style="margin-top:10px;line-height:1.55">
-                  Beta note: accounts and data are not guaranteed to persist after major updates.
-                  If anything breaks, contact <b style="color:var(--text)">fishy_x1</b> on Discord or <b style="color:var(--text)">fishyramen</b> on GitHub.
-                </div>
-              </div>
-
-              <div class="card">
-                <div class="cardTitle">Badges</div>
-                <div class="muted tiny" style="line-height:1.65">
-                  • <b style="color:var(--text)">Early User</b> (beta joiners)<br/>
-                  • <b style="color:var(--text)">Lv 10 / Lv 25 / Lv 50</b> milestones<br/>
-                  • <b style="color:var(--text)">Trusted</b> (high trust score)<br/>
-                  • More coming (events + community)
-                </div>
-              </div>
-
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- App -->
-      <div class="layout" id="app">
-        <div class="colLeft" id="colLeft">
-          <div class="leftHeader">
-            <div class="brand">
-              tonkotsu.online <span class="betaPill">BETA</span>
-            </div>
-            <div class="leftHeaderRight">
-              <button class="btn small ghost" id="discoverGroupsBtn" title="Discover groups">🔎</button>
-              <button class="btn small ghost" id="createGroupBtn" title="Create group">+</button>
-            </div>
-          </div>
-
-          <div class="channels scroll" style="flex:1">
-            <div class="sectionTitle">Messages</div>
-            <div id="channelList" style="display:flex;flex-direction:column;gap:8px"></div>
-
-            <div class="sectionTitle" style="margin-top:6px">Online</div>
-            <div class="onlineWrap scroll" id="onlineList"></div>
-          </div>
-        </div>
-
-        <div class="colMain">
-          <div class="topbar">
-            <button class="btn ghost iconBtn mobileNavBtn" id="mobileNavBtn" title="Menu">☰</button>
-
-            <div class="topic" style="flex:1;min-width:0">
-              <div class="topicRow">
-                <div class="topicTitle" id="topicTitle"># global</div>
-                <button class="btn small ghost manageBtn" id="manageBtn" title="Manage group">Manage</button>
-              </div>
-              <div class="topicSub" id="topicSub">everyone</div>
-            </div>
-
-            <div class="rightTop">
-              <div class="inboxBtnWrap" id="inboxBtnWrap">
-                <div class="inboxPill" id="inboxBtn" title="Inbox">
-                  <span class="inboxDot" aria-hidden="true"></span>
-                  <span>Inbox</span>
-                </div>
-                <div class="inboxBadgeMini" id="inboxBadgeMini">0</div>
-              </div>
-
-              <button class="btn ghost iconBtn" id="settingsBtn" title="Settings">⚙</button>
-
-              <div class="mePill" id="mePill" title="Account menu">
-                <div class="dot online" id="meDot"></div>
-                <div class="meName" id="meName">You</div>
-                <div class="caret">▾</div>
-              </div>
-            </div>
-          </div>
-
-          <div class="chat scroll" id="chat"></div>
-
-          <div class="composer">
-            <div class="row">
-              <input class="field" id="message" placeholder="Message… (@user to mention)"/>
-              <button class="btn primary" id="sendBtn">Send</button>
-            </div>
-
-            <!-- Cooldown UI (no “status: …” text shown here; JS will drive bar + warning) -->
-            <div class="cooldownWrap">
-              <div class="coolBar" id="cooldownBar" title="Cooldown">
-                <div class="coolFill" id="cooldownFill"></div>
-              </div>
-              <div class="tiny muted" id="cooldownHint">Cooldown: —</div>
-            </div>
-
-            <div class="tiny" id="warningText" style="display:none;color:rgba(255,209,102,.95);font-weight:950">
-              Don’t repeat the same message.
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div class="footer">
-        <div class="footerLinks">
-          <a href="https://ko-fi.com/fishy_x1" target="_blank" rel="noreferrer">Ko-fi</a>
-          <a href="https://github.com/fishyramen" target="_blank" rel="noreferrer">GitHub</a>
-          <a href="/status" target="_blank" rel="noreferrer">Status</a>
-        </div>
-        <div>© <span id="year"></span> tonkotsu.online</div>
+  <div id="loadingOverlay" aria-hidden="true">
+    <div class="loadingCard" role="status" aria-live="polite">
+      <div class="loadingSpinner" aria-hidden="true"></div>
+      <div class="col">
+        <div class="loadingLabel">Loading…</div>
+        <div class="loadingDetail">Please wait</div>
       </div>
     </div>
   </div>
 
-  <!-- Modal -->
-  <div class="modalBack" id="modalBack">
-    <div class="modal">
-      <div class="modalTop">
-        <div class="modalTitle" id="modalTitle">Modal</div>
-        <button class="btn small" id="modalClose">Close</button>
+  <div id="appRoot">
+    <div class="shell">
+
+      <div class="topbar row gap10">
+        <div class="brand">tonkotsu.online <span class="beta">BETA</span></div>
+        <div class="spacer"></div>
+
+        <button id="inboxBtn" class="btn btnPrimary" type="button" title="Inbox">
+          <span class="inboxLeft">
+            <span class="dotIcon" aria-hidden="true"></span>
+            <span>Inbox</span>
+          </span>
+          <span id="inboxBadge" class="row" aria-label="Unread count">0</span>
+        </button>
+
+        <button id="settingsBtn" class="btn btnGhost btnIcon" type="button" title="Settings" aria-label="Settings">
+          <span class="mono" style="opacity:.9;">⚙</span>
+        </button>
       </div>
-      <div id="modalBody"></div>
+
+      <section id="loginView" class="viewCard" aria-hidden="false">
+        <div class="viewHead">
+          <div class="viewTitle">Sign in</div>
+          <div class="viewSub">
+            If the username exists, the password must match. If it doesn’t exist, your first login creates it.
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="loginCard">
+            <h2>Account</h2>
+            <p>
+              Accounts are password-protected. This is beta; data may not persist after major updates.
+            </p>
+
+            <div class="field">
+              <div class="label">Username</div>
+              <input id="username" class="input" autocomplete="username" spellcheck="false" placeholder="fishyx1" />
+            </div>
+
+            <div class="field">
+              <div class="label">Password</div>
+              <input id="password" class="input" type="password" autocomplete="current-password" placeholder="••••••••" />
+            </div>
+
+            <div class="loginActions">
+              <button id="loginBtn" class="btn btnPrimary" type="button">Log in</button>
+              <button id="guestBtn" class="btn btnGhost" type="button" title="Guest accounts have limited features">Guest</button>
+              <div class="spacer"></div>
+              <span class="muted2" style="font-size:12.5px; font-weight:800;">Secure login enforced</span>
+            </div>
+
+            <div id="loginError" role="alert"></div>
+          </div>
+
+          <div class="loginCard">
+            <h2>Beta notice</h2>
+            <p>
+              Welcome to <strong>tonkotsu.online beta</strong>. Global chat is public and logged.
+              Private chats are not logged to Discord.
+            </p>
+            <div class="subCard">
+              <div class="subTitle">Support / contact</div>
+              <div class="subText">
+                Discord: <strong>fishy_x1</strong><br/>
+                GitHub: <strong>fishyramen</strong>
+              </div>
+            </div>
+            <div class="subCard">
+              <div class="subTitle">Anti-abuse</div>
+              <div class="subText">
+                Cooldowns + link rate-limits + shadow-mute moderation are enabled.
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="appView" class="viewCard" aria-hidden="true">
+        <div class="grid">
+          <aside class="side">
+            <div class="profileCard">
+              <div class="profileTop">
+                <div class="avatar" aria-hidden="true"></div>
+                <div class="col">
+                  <div id="profileName" class="pName">Not logged in</div>
+                  <div id="profileMeta" class="pMeta">—</div>
+                </div>
+              </div>
+
+              <div class="badgeRow" id="profileBadges">
+                <span class="badge">BETA</span>
+              </div>
+
+              <div class="divider"></div>
+
+              <div class="col gap8">
+                <div class="row gap10">
+                  <div class="muted" style="font-size:13px; font-weight:900;">Stats</div>
+                </div>
+                <div class="row gap10" style="flex-wrap:wrap;">
+                  <span class="badge" id="statCreated">Created: —</span>
+                  <span class="badge" id="statLastSeen">Last seen: —</span>
+                  <span class="badge" id="statLevel">Level: —</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="navCard">
+              <div class="navTitle">Navigation</div>
+              <div class="row gap10" style="flex-wrap:wrap;">
+                <button id="navGlobalBtn" class="btn btnPrimary btnSmall" type="button">Global</button>
+                <button id="navGroupsBtn" class="btn btnGhost btnSmall" type="button">Groups</button>
+                <button id="navDMsBtn" class="btn btnGhost btnSmall" type="button">DMs</button>
+              </div>
+              <div class="subText">
+                Only Global chat is forwarded to Discord logs.
+              </div>
+            </div>
+          </aside>
+
+          <main class="main">
+            <div class="chatHeader">
+              <div class="chatTitle">
+                Global Chat <span class="chatPill" id="globalOnlinePill">online: —</span>
+              </div>
+              <div class="spacer"></div>
+              <button id="manageBtn" class="btn btnGhost btnSmall" type="button" title="Manage group (only visible in group chats)">
+                Manage
+              </button>
+            </div>
+
+            <div class="chatBody">
+              <div id="globalList" aria-label="Global messages"></div>
+
+              <div class="chatComposer">
+                <input id="globalInput" placeholder="Type in Global…" maxlength="1200" />
+                <button id="globalSendBtn" class="btn btnPrimary" type="button">Send</button>
+              </div>
+            </div>
+          </main>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <div id="cooldownBarWrap" aria-hidden="true">
+    <div id="cooldownBar"></div>
+  </div>
+
+  <div id="settingsModal" class="modalHost" aria-hidden="true">
+    <div class="modalBackdrop" data-close="settings"></div>
+    <div class="modalCard" role="dialog" aria-modal="true" aria-label="Settings">
+      <div class="modalHead">
+        <div class="modalTitle">Settings</div>
+        <div class="spacer"></div>
+        <button class="btn btnGhost btnSmall" type="button" data-close="settings">Close</button>
+      </div>
+      <div class="modalBody">
+        <div class="modalGrid">
+          <div class="subCard">
+            <div class="subTitle">Experience</div>
+            <div class="subText">Customize appearance and UX behavior.</div>
+            <div class="row gap10" style="flex-wrap:wrap;">
+              <button id="toggleCursorBtn" class="btn btnPrimary btnSmall" type="button">Custom Cursor</button>
+              <button id="toggleMobileUXBtn" class="btn btnGhost btnSmall" type="button">Mobile UX Mode</button>
+            </div>
+          </div>
+
+          <div class="subCard">
+            <div class="subTitle">Safety</div>
+            <div class="subText">
+              Manage blocks and review security analytics.
+            </div>
+            <div class="row gap10" style="flex-wrap:wrap;">
+              <button id="blockedUsersBtn" class="btn btnPrimary btnSmall" type="button">Blocked Users</button>
+              <button id="securityBtn" class="btn btnGhost btnSmall" type="button">Security Analytics</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="subCard">
+          <div class="subTitle">Account</div>
+          <div class="subText">
+            Account changes are enforced server-side and recorded.
+          </div>
+          <div class="row gap10" style="flex-wrap:wrap;">
+            <button id="changePasswordBtn" class="btn btnGhost btnSmall" type="button">Change Password</button>
+            <button id="changeUsernameBtn" class="btn btnGhost btnSmall" type="button">Change Username</button>
+            <div class="spacer"></div>
+            <button id="logoutBtn" class="btn btnDanger btnSmall" type="button">Log out</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="blockedModal" class="modalHost" aria-hidden="true">
+    <div class="modalBackdrop" data-close="blocked"></div>
+    <div class="modalCard" role="dialog" aria-modal="true" aria-label="Blocked users">
+      <div class="modalHead">
+        <div class="modalTitle">Blocked Users</div>
+        <div class="spacer"></div>
+        <button class="btn btnGhost btnSmall" type="button" data-close="blocked">Close</button>
+      </div>
+      <div class="modalBody">
+        <div class="subCard">
+          <div class="subTitle">List</div>
+          <div class="subText">Users you have blocked. You can unblock them here.</div>
+          <div id="blockedList" class="col gap10"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="securityModal" class="modalHost" aria-hidden="true">
+    <div class="modalBackdrop" data-close="security"></div>
+    <div class="modalCard" role="dialog" aria-modal="true" aria-label="Security analytics">
+      <div class="modalHead">
+        <div class="modalTitle">Security Analytics</div>
+        <div class="spacer"></div>
+        <button class="btn btnGhost btnSmall" type="button" data-close="security">Close</button>
+      </div>
+      <div class="modalBody">
+        <div class="modalGrid">
+          <div class="subCard">
+            <div class="subTitle">Login history</div>
+            <div class="subText">Hashed IP/UA for bot detection.</div>
+            <div id="loginHistory" class="col gap10"></div>
+          </div>
+          <div class="subCard">
+            <div class="subTitle">Session manager</div>
+            <div class="subText">Active sessions.</div>
+            <div id="sessionList" class="col gap10"></div>
+          </div>
+        </div>
+
+        <div class="subCard">
+          <div class="subTitle">Recent account changes</div>
+          <div class="subText">Security events and account actions.</div>
+          <div id="securityEvents" class="col gap10"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="manageModal" class="modalHost" aria-hidden="true">
+    <div class="modalBackdrop" data-close="manage"></div>
+    <div class="modalCard" role="dialog" aria-modal="true" aria-label="Manage group">
+      <div class="modalHead">
+        <div class="modalTitle">Manage Group</div>
+        <div class="spacer"></div>
+        <button class="btn btnGhost btnSmall" type="button" data-close="manage">Close</button>
+      </div>
+
+      <div class="modalBody">
+        <div class="subCard">
+          <div class="subTitle">Not implemented in this beta build</div>
+          <div class="subText">
+            Group chat management endpoints are ready server-side, but the full group UI (list + switching) is not enabled
+            in this compact beta. Global chat is the main focus right now.
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 
   <script src="/socket.io/socket.io.js"></script>
   <script src="/script.js"></script>
+
+  <script>
+    (function(){
+      const map = {
+        settings: document.getElementById("settingsModal"),
+        blocked: document.getElementById("blockedModal"),
+        security: document.getElementById("securityModal"),
+        manage: document.getElementById("manageModal"),
+      };
+      document.addEventListener("click", (e) => {
+        const t = e.target;
+        if (!t || !t.getAttribute) return;
+        const key = t.getAttribute("data-close");
+        if (!key || !map[key]) return;
+        map[key].classList.remove("show");
+        map[key].setAttribute("aria-hidden","true");
+      }, { passive:true });
+    })();
+  </script>
 </body>
 </html>
