@@ -1,1000 +1,1800 @@
-/* script.js — tonkotsu.online client
-   Fixes requested:
-   1) Loading screen timing you out:
-      - Loading overlay now has a watchdog and explicit “ready gates”
-      - Never blocks sending login packet; never blocks Socket.IO connection
-      - Clears itself if any critical stage fails (with visible error)
+// server.js — tonkotsu.online backend (Socket.IO + Express)
+// Fix: removed broken dbObj init pattern (ReferenceError). This file is self-contained.
+// Features included (core / requested):
+// - Accounts: username is unique; existing usernames require correct password (no hijacking)
+// - Session resume via token
+// - Persisted storage (users/groups/global) on disk (JSON)
+// - Friends + inbox + mentions
+// - DMs require mutual friendship
+// - Groups public/private + discover + invites (invites require friendship)
+// - Group owner tools: rename, transfer ownership, add/remove members, mute/unmute, mute all, cooldown slider, per-member cooldown override, cancel cooldown
+// - Dynamic global cooldown (server-driven)
+// - Anti-repeat warning (same message twice)
+// - Shadow mute on severe language / 18+ content attempts (user sees own messages; others don't)
+// - Link rules: porn/18+ links blocked; 1 link per 5 minutes per user
+// - Basic anti-spam: mention cap per message, mention frequency dampening
+// - Per-device account creation limit: 4 per day (best-effort via IP+UA fingerprint)
 
-   2) Custom cursor not working:
-      - Cursor is now a dedicated DOM layer that is enabled/disabled via settings
-      - Uses requestAnimationFrame smoothing, high z-index, pointer-events:none
-      - Auto-disables on touch/mobile or if prefers-reduced-motion
+"use strict";
 
-   3) IP/info not logged on open:
-      - Immediately emits `client:hello` on socket connect
-      - Also emits `client:hello` again on visibility change and after login
-      - Server must implement a `client:hello` listener (see notes in code)
+const fs = require("fs");
+const path = require("path");
+const crypto = require("crypto");
+const express = require("express");
+const http = require("http");
+const { Server } = require("socket.io");
+const bcrypt = require("bcryptjs");
+const { nanoid } = require("nanoid");
 
-   4) “Each global message logged to Discord as rich message”:
-      - That is server-side. This script sends `sendGlobal` with extra metadata
-        (clientTs, pageId) so server can enrich embeds.
-      - Your server.js must post a Discord embed (recommended fields included).
+// -------------------- storage --------------------
+const DATA_DIR = path.join(__dirname, "data");
+const USERS_FILE = path.join(DATA_DIR, "users.json");
+const GROUPS_FILE = path.join(DATA_DIR, "groups.json");
+const GLOBAL_FILE = path.join(DATA_DIR, "global.json");
+const DEVICE_CREATE_FILE = path.join(DATA_DIR, "device_creations.json");
 
-   IMPORTANT:
-   - This file assumes your HTML already has elements with IDs/classes referenced below.
-   - If your DOM differs, map the selectors at the top.
-*/
+if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 
-(() => {
-  "use strict";
+function readJson(file, fallback) {
+  try {
+    if (!fs.existsSync(file)) return fallback;
+    return JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch {
+    return fallback;
+  }
+}
+function writeJson(file, obj) {
+  fs.writeFileSync(file, JSON.stringify(obj, null, 2), "utf8");
+}
 
-  /* ----------------------------- selectors ----------------------------- */
-  const SEL = {
-    // Auth
-    loginView: "#loginView",
-    appView: "#appView",
-    usernameInput: "#username",
-    passwordInput: "#password",
-    loginBtn: "#loginBtn",
-    guestBtn: "#guestBtn",
-    loginError: "#loginError",
+let users = readJson(USERS_FILE, {});          // username -> record
+let groups = readJson(GROUPS_FILE, {});        // groupId  -> record
+let globalHistory = readJson(GLOBAL_FILE, []); // [{user,text,ts}]
+let deviceCreations = readJson(DEVICE_CREATE_FILE, {}); // deviceKey -> { day:"YYYY-MM-DD", count:number }
 
-    // Header / global UI
-    inboxBtn: "#inboxBtn",
-    inboxBadge: "#inboxBadge",
-    settingsBtn: "#settingsBtn",
+function persistUsers() { writeJson(USERS_FILE, users); }
+function persistGroups() { writeJson(GROUPS_FILE, groups); }
+function persistGlobal() { writeJson(GLOBAL_FILE, globalHistory); }
+function persistDeviceCreations() { writeJson(DEVICE_CREATE_FILE, deviceCreations); }
 
-    // Loading overlay (must exist, or we will create it)
-    loadingOverlay: "#loadingOverlay",
+function now() { return Date.now(); }
+function dayKey(ts = Date.now()) {
+  const d = new Date(ts);
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(d.getUTCDate()).padStart(2, "0");
+  return `${y}-${m}-${dd}`;
+}
 
-    // Global chat
-    globalInput: "#globalInput",
-    globalSendBtn: "#globalSendBtn",
-    globalList: "#globalList",
-    cooldownBarWrap: "#cooldownBarWrap",
-    cooldownBar: "#cooldownBar",
+// -------------------- validation --------------------
+function isValidUser(u) { return /^[A-Za-z0-9]{4,20}$/.test(String(u || "").trim()); }
+function isValidPass(p) { return /^[A-Za-z0-9]{4,32}$/.test(String(p || "").trim()); }
+function isGuestName(u) { return /^Guest\d{4,5}$/.test(String(u || "")); }
 
-    // Popups/toasts (optional)
-    toastHost: "#toastHost",
+// -------------------- security helpers --------------------
+function sha256(s) { return crypto.createHash("sha256").update(String(s)).digest("hex"); }
+function newToken() { return crypto.randomBytes(24).toString("hex"); }
+
+function deviceKeyFromSocket(socket) {
+  // Best-effort "device" fingerprint. Not perfect, but meets your "per PC" intent for basic anti-bot.
+  const xf = socket.handshake.headers["x-forwarded-for"];
+  const ip = (Array.isArray(xf) ? xf[0] : (xf || socket.handshake.address || "")).split(",")[0].trim();
+  const ua = String(socket.handshake.headers["user-agent"] || "");
+  return sha256(`${ip}::${ua}`).slice(0, 32);
+}
+
+function bumpDeviceCreationLimit(deviceKey) {
+  const today = dayKey();
+  const rec = deviceCreations[deviceKey] || { day: today, count: 0 };
+  if (rec.day !== today) { rec.day = today; rec.count = 0; }
+  rec.count += 1;
+  deviceCreations[deviceKey] = rec;
+  persistDeviceCreations();
+  return rec.count;
+}
+function deviceCreationCount(deviceKey) {
+  const today = dayKey();
+  const rec = deviceCreations[deviceKey] || { day: today, count: 0 };
+  if (rec.day !== today) return 0;
+  return rec.count || 0;
+}
+
+// -------------------- user model --------------------
+function defaultSettings() {
+  return {
+    sounds: true,
+    hideMildProfanity: false,
+    allowFriendRequests: true,
+    allowGroupInvites: true,
+    customCursor: true,
+    mobileUX: false
   };
+}
+function defaultSocial() {
+  return { friends: [], incoming: [], outgoing: [], blocked: [] };
+}
+function defaultStats() {
+  return { messages: 0, xp: 0, level: 1 };
+}
+function xpNeededForNext(level) {
+  const L = Math.max(1, Number(level) || 1);
+  return Math.floor(120 + (L * 65) + (L * L * 12));
+}
+function awardXP(username, amount) {
+  const u = users[username];
+  if (!u || isGuestName(username)) return null;
 
-  const $ = (q) => document.querySelector(q);
-  const el = Object.fromEntries(Object.entries(SEL).map(([k, q]) => [k, $(q)]));
+  u.stats ||= defaultStats();
+  u.stats.messages = (u.stats.messages || 0) + 1;
+  u.stats.xp = (u.stats.xp || 0) + amount;
 
-  /* ----------------------------- utilities ---------------------------- */
-  const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
-  const now = () => Date.now();
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-  const isTouchLike =
-    ("ontouchstart" in window) ||
-    (navigator.maxTouchPoints && navigator.maxTouchPoints > 0) ||
-    (matchMedia && matchMedia("(pointer: coarse)").matches);
-
-  const prefersReducedMotion =
-    matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches;
-
-  function safeText(s, max = 2000) {
-    let t = String(s ?? "");
-    t = t.replace(/\s+/g, " ").trim();
-    if (t.length > max) t = t.slice(0, max) + "…";
-    return t;
+  let leveled = false;
+  while (u.stats.xp >= xpNeededForNext(u.stats.level || 1)) {
+    u.stats.xp -= xpNeededForNext(u.stats.level || 1);
+    u.stats.level = (u.stats.level || 1) + 1;
+    leveled = true;
   }
+  persistUsers();
+  return { leveled, level: u.stats.level, xp: u.stats.xp, next: xpNeededForNext(u.stats.level) };
+}
 
-  function toast(msg, type = "info") {
-    msg = safeText(msg, 260);
-    if (!el.toastHost) {
-      // Minimal fallback
-      console[type === "error" ? "error" : "log"](msg);
-      return;
-    }
-    const div = document.createElement("div");
-    div.className = `toast toast-${type}`;
-    div.textContent = msg;
-    el.toastHost.appendChild(div);
-    requestAnimationFrame(() => div.classList.add("show"));
-    setTimeout(() => {
-      div.classList.remove("show");
-      setTimeout(() => div.remove(), 250);
-    }, 2600);
-  }
-
-  function show(viewEl) {
-    if (!viewEl) return;
-    viewEl.style.display = "";
-    viewEl.removeAttribute("aria-hidden");
-  }
-  function hide(viewEl) {
-    if (!viewEl) return;
-    viewEl.style.display = "none";
-    viewEl.setAttribute("aria-hidden", "true");
-  }
-
-  /* ----------------------- persistent client state --------------------- */
-  const state = {
-    socket: null,
-    connected: false,
-
-    me: {
-      username: null,
+function ensureUser(username) {
+  if (!users[username]) {
+    users[username] = {
+      user: username,
+      createdAt: now(),
+      lastSeen: now(),
+      passHash: null,      // bcrypt hash
       token: null,
-      guest: false,
-      settings: {
-        customCursor: true,
-        mobileUX: false,
-        sounds: true,
+      status: "online",
+      settings: defaultSettings(),
+      social: defaultSocial(),
+      inbox: [],
+      stats: defaultStats(),
+      dm: {},              // otherUser -> msgs[]
+      security: {
+        sessions: [],      // [{token, createdAt, ipHash, uaHash, lastSeen}]
+        loginHistory: []   // [{ts, ipHash, uaHash, ok}]
       },
-    },
+      flags: {
+        beta: true
+      }
+    };
+  }
+  const u = users[username];
+  u.settings ||= defaultSettings();
+  u.social ||= defaultSocial();
+  u.inbox ||= [];
+  u.stats ||= defaultStats();
+  u.dm ||= {};
+  u.security ||= { sessions: [], loginHistory: [] };
+  u.flags ||= { beta: true };
 
-    // “ready gates” for loading overlay
-    gates: {
-      socketConnected: false,
-      loginSuccess: false,
-      historyLoaded: false,
-      uiMounted: false,
-    },
+  // normalize settings defaults
+  const d = defaultSettings();
+  for (const k of Object.keys(d)) {
+    if (typeof u.settings[k] !== typeof d[k]) u.settings[k] = d[k];
+  }
+  // normalize social lists
+  for (const k of ["friends", "incoming", "outgoing", "blocked"]) {
+    if (!Array.isArray(u.social[k])) u.social[k] = [];
+  }
 
-    cooldown: {
-      seconds: 3,
-      nextAllowedAt: 0,
-      lastServerPushAt: 0,
-    },
+  return u;
+}
 
-    page: {
-      id: cryptoRandomId(),
-      openedAt: now(),
-    },
+function safeUserPublic(u) {
+  return { user: u.user, status: u.status || "online", level: u.stats?.level || 1 };
+}
+
+function addInboxItem(toUser, item) {
+  const u = ensureUser(toUser);
+  u.inbox.unshift(item);
+  if (u.inbox.length > 250) u.inbox.length = 250;
+  persistUsers();
+}
+function countInbox(u) {
+  const items = u.inbox || [];
+  let friend = 0, groupInv = 0, ment = 0, groupReq = 0;
+  for (const it of items) {
+    if (it.type === "friend") friend++;
+    else if (it.type === "group") groupInv++;
+    else if (it.type === "mention") ment++;
+    else if (it.type === "groupReq") groupReq++;
+  }
+  return { total: friend + groupInv + ment + groupReq, friend, groupInv, ment, groupReq };
+}
+
+// -------------------- message parsing --------------------
+function extractMentions(text) {
+  const t = String(text || "");
+  const rx = /@([A-Za-z0-9]{4,20})/g;
+  const found = new Set();
+  let m;
+  while ((m = rx.exec(t)) !== null) found.add(m[1]);
+  return Array.from(found);
+}
+function containsUrl(text) {
+  const t = String(text || "");
+  return /(https?:\/\/|www\.)/i.test(t);
+}
+function extractUrls(text) {
+  const t = String(text || "");
+  const rx = /\bhttps?:\/\/[^\s<>"')\]]+/ig;
+  const out = [];
+  let m;
+  while ((m = rx.exec(t)) !== null) out.push(m[0]);
+  return out;
+}
+
+// A strict-ish porn/18+ block (not exhaustive; intentionally conservative)
+const BLOCKED_LINK_RX = new RegExp(
+  [
+    "porn", "xnxx", "xvideos", "pornhub", "redtube", "youporn",
+    "hentai", "rule34", "onlyfans", "fansly", "sex", "nsfw",
+    "camgirl", "cam4", "chaturbate"
+  ].join("|"),
+  "i"
+);
+
+// Severe content triggers: racial slurs, explicit sexual content, minors, etc.
+// Keep it "huge but not too huge": strong coverage without going absurd.
+const SEVERE_BAD_RX = new RegExp(
+  [
+    // racial slurs / hate (partial list)
+    "\\bn[i1]gg(?:a|er)\\b",
+    "\\bchink\\b",
+    "\\bwetback\\b",
+    "\\bkike\\b",
+    "\\bspic\\b",
+    "\\bfag(?:got)?\\b",
+    "\\btrann(?:y|ies)\\b",
+
+    // sexual content + minors / coercion indicators
+    "\\bcp\\b",
+    "\\bchild\\s*porn\\b",
+    "\\bloli\\b",
+    "\\bunderage\\b",
+    "\\brape\\b",
+    "\\bincest\\b",
+    "\\bbeastiality\\b",
+
+    // explicit terms
+    "\\bblowjob\\b",
+    "\\bhandjob\\b",
+    "\\bdeepthroat\\b",
+    "\\bcumshot\\b",
+    "\\bgangbang\\b",
+    "\\bcreampie\\b",
+    "\\banal\\b",
+    "\\bthreesome\\b",
+    "\\bstrip\\s*tease\\b"
+  ].join("|"),
+  "i"
+);
+
+function isSevereBad(text) {
+  const t = String(text || "");
+  if (SEVERE_BAD_RX.test(t)) return true;
+  // Also treat 18+ link-ish content as severe
+  const urls = extractUrls(t);
+  for (const u of urls) {
+    if (BLOCKED_LINK_RX.test(u)) return true;
+  }
+  return false;
+}
+
+// -------------------- global history --------------------
+function pushGlobalMessage(msg) {
+  globalHistory.push(msg);
+  if (globalHistory.length > 350) globalHistory.shift();
+  persistGlobal();
+}
+
+// -------------------- DM store --------------------
+function ensureDMStore(userA, userB) {
+  const a = ensureUser(userA);
+  a.dm ||= {};
+  if (!a.dm[userB]) a.dm[userB] = [];
+  return a.dm[userB];
+}
+function pushDM(a, b, msg) {
+  const arrA = ensureDMStore(a, b);
+  const arrB = ensureDMStore(b, a);
+  arrA.push(msg);
+  arrB.push(msg);
+  if (arrA.length > 260) arrA.shift();
+  if (arrB.length > 260) arrB.shift();
+  persistUsers();
+}
+
+// -------------------- groups --------------------
+function ensureGroupDefaults(g) {
+  g.privacy = (g.privacy === "public") ? "public" : "private";
+  g.cooldownSec = Number.isFinite(Number(g.cooldownSec)) ? Number(g.cooldownSec) : 2.5;
+  g.cooldownEnabled = (g.cooldownEnabled !== false); // default true
+  g.mutedAll = !!g.mutedAll;
+
+  g.members ||= [];
+  g.owner ||= null;
+  g.createdAt ||= now();
+  g.messages ||= [];
+
+  g.mutedUsers ||= [];                 // fully muted in group
+  g.unmutedWhileMutedAll ||= [];       // allowlist when mutedAll is true
+
+  g.invites ||= [];                    // [{id,to,from,ts}]
+  g.joinRequests ||= [];               // [{from,ts}]
+
+  // permissions: who can invite others (besides owner)
+  g.perms ||= { invite: [] };          // invite: [username]
+  if (!Array.isArray(g.perms.invite)) g.perms.invite = [];
+
+  // per-member cooldown override: user -> seconds (null/undefined = group default)
+  g.memberCooldown ||= {};             // { username: seconds }
+  return g;
+}
+function groupPublic(g) {
+  g = ensureGroupDefaults(g);
+  return {
+    id: g.id,
+    name: g.name,
+    owner: g.owner,
+    members: g.members || [],
+    privacy: g.privacy,
+    cooldownSec: g.cooldownSec,
+    cooldownEnabled: g.cooldownEnabled !== false,
+    mutedAll: !!g.mutedAll,
+    perms: g.perms,
+    memberCooldown: g.memberCooldown || {}
   };
+}
 
-  function cryptoRandomId() {
-    try {
-      const b = new Uint8Array(12);
-      crypto.getRandomValues(b);
-      return Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
-    } catch {
-      return String(Math.random()).slice(2) + String(Date.now());
-    }
+// -------------------- online tracking --------------------
+const socketsByUser = new Map(); // user -> Set(socket.id)
+const userBySocket = new Map();  // socket.id -> user
+
+function setOnline(user, socketId) {
+  if (!socketsByUser.has(user)) socketsByUser.set(user, new Set());
+  socketsByUser.get(user).add(socketId);
+  userBySocket.set(socketId, user);
+}
+function setOffline(socketId) {
+  const user = userBySocket.get(socketId);
+  if (!user) return;
+  userBySocket.delete(socketId);
+  const set = socketsByUser.get(user);
+  if (set) {
+    set.delete(socketId);
+    if (set.size === 0) socketsByUser.delete(user);
+  }
+}
+function emitToUser(user, evt, payload) {
+  const set = socketsByUser.get(user);
+  if (!set) return;
+  for (const sid of set) io.to(sid).emit(evt, payload);
+}
+function broadcastOnlineUsers() {
+  const list = [];
+  for (const [user] of socketsByUser.entries()) {
+    const u = users[user];
+    if (!u) continue;
+    if (u.status === "invisible") continue;
+    list.push(safeUserPublic(u));
+  }
+  list.sort((a, b) => a.user.localeCompare(b.user));
+  io.emit("onlineUsers", list);
+}
+
+// -------------------- cooldowns / anti-spam --------------------
+// Dynamic global cooldown: base 3s, improves with level a bit, penalizes bursts.
+const globalRate = new Map(); // user -> { nextAllowed, recent:[ts...], lastMsgNorm, lastLinkAt, lastMentionAt, shadowMuteUntil }
+function baseCooldownForUser(username) {
+  if (!users[username]) return 3;
+  if (isGuestName(username)) return 5;
+  const lvl = Number(users[username].stats?.level || 1);
+  return Math.max(1.5, 3 - (lvl - 1) * 0.05);
+}
+function currentCooldownForUser(username) {
+  const base = baseCooldownForUser(username);
+  const r = globalRate.get(username);
+  if (!r) return base;
+
+  const cutoff = now() - 10000;
+  r.recent = (r.recent || []).filter(t => t >= cutoff);
+
+  const n = r.recent.length;
+  const penalty = n >= 8 ? 3.0 : (n >= 6 ? 2.0 : (n >= 4 ? 1.0 : 0));
+  return Math.min(12, base + penalty);
+}
+function touchGlobalSend(username) {
+  const t = now();
+  const r = globalRate.get(username) || { nextAllowed: 0, recent: [] };
+  r.recent.push(t);
+  globalRate.set(username, r);
+}
+
+// Group cooldown per-user map
+const groupRate = new Map(); // key `${gid}:${user}` -> nextAllowed
+function groupKey(gid, user) { return `${gid}:${user}`; }
+
+// Repeat-warning normalization
+function normMsg(s) {
+  return String(s || "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .toLowerCase();
+}
+
+// Mention anti-spam
+function canMention(username) {
+  const r = globalRate.get(username) || {};
+  const t = now();
+  const last = Number(r.lastMentionAt || 0);
+  // 1 mention-bearing message per 8s (best-effort). Still allows general chatting.
+  return (t - last) >= 8000;
+}
+
+// Link rules: 1 link / 5 min per user
+function canPostLink(username) {
+  const r = globalRate.get(username) || {};
+  const t = now();
+  const last = Number(r.lastLinkAt || 0);
+  return (t - last) >= 5 * 60 * 1000;
+}
+
+// Shadow mute duration (ms)
+const SHADOW_MUTE_MS = 10 * 60 * 1000;
+
+// -------------------- server setup --------------------
+const app = express();
+const server = http.createServer(app);
+const io = new Server(server, {
+  // You can tighten this later
+  cors: { origin: "*" }
+});
+
+app.use(express.static(path.join(__dirname, "public")));
+app.get("/health", (req, res) => res.json({ ok: true }));
+
+// -------------------- socket handlers --------------------
+io.on("connection", (socket) => {
+  let authedUser = null;
+
+  function requireAuth() {
+    return !!authedUser && !!users[authedUser];
+  }
+  function requireNonGuest() {
+    return requireAuth() && !isGuestName(authedUser);
   }
 
-  function saveSession() {
-    try {
-      const obj = {
-        token: state.me.token,
-        username: state.me.username,
+  function sendCooldown() {
+    if (!authedUser) return;
+    socket.emit("cooldown:update", { seconds: currentCooldownForUser(authedUser) });
+  }
+
+  function socketIpUaHashes() {
+    const xf = socket.handshake.headers["x-forwarded-for"];
+    const ip = (Array.isArray(xf) ? xf[0] : (xf || socket.handshake.address || "")).split(",")[0].trim();
+    const ua = String(socket.handshake.headers["user-agent"] || "");
+    return { ipHash: sha256(ip), uaHash: sha256(ua) };
+  }
+
+  function recordLogin(username, ok) {
+    const u = ensureUser(username);
+    const { ipHash, uaHash } = socketIpUaHashes();
+    u.security.loginHistory ||= [];
+    u.security.loginHistory.unshift({ ts: now(), ipHash, uaHash, ok: !!ok });
+    if (u.security.loginHistory.length > 50) u.security.loginHistory.length = 50;
+    persistUsers();
+  }
+
+  function upsertSession(username, token) {
+    const u = ensureUser(username);
+    const { ipHash, uaHash } = socketIpUaHashes();
+    u.security.sessions ||= [];
+    const existing = u.security.sessions.find(s => s.token === token);
+    if (existing) {
+      existing.lastSeen = now();
+      existing.ipHash = ipHash;
+      existing.uaHash = uaHash;
+    } else {
+      u.security.sessions.unshift({ token, createdAt: now(), lastSeen: now(), ipHash, uaHash });
+      if (u.security.sessions.length > 10) u.security.sessions.length = 10;
+    }
+    persistUsers();
+  }
+
+  function sendInitSuccess(u, { guest = false, firstTime = false } = {}) {
+    authedUser = u.user;
+    setOnline(authedUser, socket.id);
+
+    u.lastSeen = now();
+
+    if (guest) {
+      u.status = "online";
+      u.token = null;
+    } else {
+      u.status ||= "online";
+      u.token ||= newToken();
+      upsertSession(u.user, u.token);
+    }
+
+    persistUsers();
+
+    socket.emit("loginSuccess", {
+      username: u.user,
+      guest: !!guest,
+      token: guest ? null : u.token,
+      status: u.status,
+      settings: u.settings,
+      social: u.social,
+      stats: {
+        level: u.stats?.level || 1,
+        xp: u.stats?.xp || 0,
+        next: xpNeededForNext(u.stats?.level || 1),
+        messages: u.stats?.messages || 0,
+        createdAt: u.createdAt,
+        lastSeen: u.lastSeen
+      },
+      firstTime: !!firstTime
+    });
+
+    sendCooldown();
+
+    if (!guest) {
+      socket.emit("inbox:badge", countInbox(u));
+      socket.emit("inbox:data", { items: u.inbox || [] });
+    }
+
+    broadcastOnlineUsers();
+  }
+
+  // -------------------- resume session --------------------
+  socket.on("resume", ({ token }) => {
+    const tok = String(token || "");
+    if (!tok) return socket.emit("resumeFail");
+
+    const found = Object.values(users).find(u => u && u.token === tok && u.passHash);
+    if (!found) return socket.emit("resumeFail");
+
+    // update session record
+    upsertSession(found.user, tok);
+    sendInitSuccess(found, { guest: false, firstTime: false });
+  });
+
+  // -------------------- cooldown get --------------------
+  socket.on("cooldown:get", () => {
+    if (!requireAuth()) return;
+    sendCooldown();
+  });
+
+  // -------------------- login / create --------------------
+  socket.on("login", async ({ username, password, guest }) => {
+    const devKey = deviceKeyFromSocket(socket);
+
+    // Guest login
+    if (guest) {
+      let g = null;
+      for (let i = 0; i < 80; i++) {
+        const n = 1000 + Math.floor(Math.random() * 9000);
+        const name = `Guest${n}`;
+        if (!users[name] && !socketsByUser.has(name)) {
+          g = ensureUser(name);
+          g.passHash = null;
+          g.token = null;
+          g.status = "online";
+          g.flags.beta = true;
+          break;
+        }
+      }
+      if (!g) return socket.emit("loginError", "Guest slots busy. Try again.");
+      persistUsers();
+      recordLogin(g.user, true);
+      return sendInitSuccess(g, { guest: true, firstTime: false });
+    }
+
+    const uName = String(username || "").trim();
+    const pass = String(password || "").trim();
+
+    if (!isValidUser(uName)) return socket.emit("loginError", "Username: letters/numbers only, 4–20.");
+    if (!isValidPass(pass)) return socket.emit("loginError", "Password: letters/numbers only, 4–32.");
+
+    const exists = !!users[uName] && !!users[uName].passHash;
+
+    // Enforce 4 account creations/day per device (best-effort)
+    if (!exists) {
+      const c = deviceCreationCount(devKey);
+      if (c >= 4) {
+        recordLogin(uName, false);
+        return socket.emit("loginError", "Account creation limit reached (4 per day on this device).");
+      }
+    }
+
+    const rec = ensureUser(uName);
+
+    // Existing account => password must match
+    if (rec.passHash) {
+      const ok = await bcrypt.compare(pass, rec.passHash).catch(() => false);
+      recordLogin(uName, ok);
+      if (!ok) return socket.emit("loginError", "Incorrect password.");
+
+      rec.token = newToken();
+      rec.status ||= "online";
+      rec.lastSeen = now();
+      persistUsers();
+
+      upsertSession(rec.user, rec.token);
+      return sendInitSuccess(rec, { guest: false, firstTime: false });
+    }
+
+    // New account create
+    const newCount = bumpDeviceCreationLimit(devKey);
+    if (newCount > 4) {
+      // should not happen due to earlier check, but keep safe
+      recordLogin(uName, false);
+      return socket.emit("loginError", "Account creation limit reached (4 per day on this device).");
+    }
+
+    const saltRounds = 12;
+    rec.passHash = await bcrypt.hash(pass, saltRounds);
+    rec.token = newToken();
+    rec.status = "online";
+    rec.createdAt ||= now();
+    rec.lastSeen = now();
+    rec.flags.beta = true;
+
+    persistUsers();
+    recordLogin(uName, true);
+    upsertSession(rec.user, rec.token);
+    return sendInitSuccess(rec, { guest: false, firstTime: true });
+  });
+
+  // -------------------- disconnect --------------------
+  socket.on("disconnect", () => {
+    const u = userBySocket.get(socket.id);
+    setOffline(socket.id);
+    if (u && users[u]) {
+      users[u].lastSeen = now();
+      persistUsers();
+    }
+    broadcastOnlineUsers();
+  });
+
+  // -------------------- status --------------------
+  socket.on("status:set", ({ status }) => {
+    if (!requireAuth()) return;
+    const s = String(status || "");
+    const allowed = new Set(["online", "idle", "dnd", "invisible"]);
+    if (!allowed.has(s)) return;
+
+    const u = users[authedUser];
+    u.status = s;
+    u.lastSeen = now();
+    persistUsers();
+
+    emitToUser(authedUser, "status:update", { status: s });
+    broadcastOnlineUsers();
+  });
+
+  // -------------------- settings --------------------
+  socket.on("settings:update", (s) => {
+    if (!requireNonGuest()) return;
+    const u = users[authedUser];
+    u.settings ||= defaultSettings();
+
+    const keys = Object.keys(defaultSettings());
+    for (const k of keys) {
+      if (typeof s?.[k] === typeof defaultSettings()[k]) u.settings[k] = s[k];
+    }
+
+    persistUsers();
+    socket.emit("settings", u.settings);
+  });
+
+  // -------------------- security endpoints (client analytics) --------------------
+  socket.on("security:get", () => {
+    if (!requireNonGuest()) return;
+    const u = users[authedUser];
+    const sec = u.security || { sessions: [], loginHistory: [] };
+
+    socket.emit("security:data", {
+      sessions: (sec.sessions || []).map(s => ({ ...s })), // contains token; your client can hide/format
+      loginHistory: (sec.loginHistory || []).map(x => ({ ...x })),
+    });
+  });
+
+  socket.on("security:logoutSession", ({ token }) => {
+    if (!requireNonGuest()) return;
+    const tok = String(token || "");
+    if (!tok) return;
+    const u = users[authedUser];
+    u.security.sessions = (u.security.sessions || []).filter(s => s.token !== tok);
+    if (u.token === tok) u.token = newToken(); // invalidate current too if requested
+    persistUsers();
+    socket.emit("security:data", {
+      sessions: (u.security.sessions || []).map(s => ({ ...s })),
+      loginHistory: (u.security.loginHistory || []).map(x => ({ ...x }))
+    });
+  });
+
+  socket.on("account:changePassword", async ({ oldPass, newPass }) => {
+    if (!requireNonGuest()) return;
+    const u = users[authedUser];
+    const o = String(oldPass || "").trim();
+    const n = String(newPass || "").trim();
+    if (!isValidPass(o) || !isValidPass(n)) return socket.emit("sendError", { reason: "Invalid password format." });
+
+    const ok = await bcrypt.compare(o, u.passHash).catch(() => false);
+    if (!ok) return socket.emit("sendError", { reason: "Old password incorrect." });
+
+    u.passHash = await bcrypt.hash(n, 12);
+    u.token = newToken(); // rotate
+    upsertSession(u.user, u.token);
+    persistUsers();
+    socket.emit("account:changed", { ok: true });
+  });
+
+  socket.on("account:changeUsername", async ({ newUsername, password }) => {
+    if (!requireNonGuest()) return;
+    const u = users[authedUser];
+
+    const nu = String(newUsername || "").trim();
+    const pw = String(password || "").trim();
+    if (!isValidUser(nu)) return socket.emit("sendError", { reason: "New username invalid." });
+    if (!isValidPass(pw)) return socket.emit("sendError", { reason: "Password invalid." });
+    if (users[nu]) return socket.emit("sendError", { reason: "Username already in use." });
+
+    const ok = await bcrypt.compare(pw, u.passHash).catch(() => false);
+    if (!ok) return socket.emit("sendError", { reason: "Password incorrect." });
+
+    // rename key in users
+    const old = authedUser;
+    const rec = users[old];
+    rec.user = nu;
+
+    // Update references across system
+    // Friends lists
+    for (const otherName of Object.keys(users)) {
+      const other = users[otherName];
+      if (!other?.social) continue;
+      for (const k of ["friends", "incoming", "outgoing", "blocked"]) {
+        other.social[k] = (other.social[k] || []).map(x => (x === old ? nu : x));
+      }
+      // DM stores in each user's map: keys are other usernames
+      if (other.dm && other.dm[old]) {
+        other.dm[nu] = other.dm[old];
+        delete other.dm[old];
+      }
+      // Inbox message text is not fully rewritten; acceptable for now.
+    }
+
+    // Groups: members, owner, perms, cooldown overrides, muted lists, allowlists
+    for (const gid of Object.keys(groups)) {
+      const g = ensureGroupDefaults(groups[gid]);
+      g.members = (g.members || []).map(x => (x === old ? nu : x));
+      if (g.owner === old) g.owner = nu;
+      g.mutedUsers = (g.mutedUsers || []).map(x => (x === old ? nu : x));
+      g.unmutedWhileMutedAll = (g.unmutedWhileMutedAll || []).map(x => (x === old ? nu : x));
+      g.perms.invite = (g.perms.invite || []).map(x => (x === old ? nu : x));
+      if (g.memberCooldown && Object.prototype.hasOwnProperty.call(g.memberCooldown, old)) {
+        g.memberCooldown[nu] = g.memberCooldown[old];
+        delete g.memberCooldown[old];
+      }
+      // Messages keep original author string; leaving as-is is acceptable for now.
+    }
+
+    // Move record key
+    delete users[old];
+    users[nu] = rec;
+
+    // rotate token
+    rec.token = newToken();
+    upsertSession(rec.user, rec.token);
+
+    persistUsers();
+    persistGroups();
+
+    authedUser = nu;
+    emitToUser(nu, "account:renamed", { ok: true, username: nu, token: rec.token });
+    broadcastOnlineUsers();
+  });
+
+  // -------------------- profile --------------------
+  socket.on("profile:get", ({ user }) => {
+    if (!requireAuth()) return;
+    const target = String(user || "");
+    const t = users[target];
+    if (!t || isGuestName(target) || !t.passHash) {
+      return socket.emit("profile:data", { user: target, exists: false, guest: true });
+    }
+    const level = t.stats?.level || 1;
+    socket.emit("profile:data", {
+      user: t.user,
+      exists: true,
+      guest: false,
+      createdAt: t.createdAt,
+      lastSeen: t.lastSeen || t.createdAt,
+      status: t.status || "online",
+      messages: t.stats?.messages || 0,
+      level,
+      xp: t.stats?.xp || 0,
+      next: xpNeededForNext(level),
+      badges: computeBadges(t)
+    });
+  });
+
+  function computeBadges(userRec) {
+    const out = [];
+    // Early user / beta
+    if (userRec?.flags?.beta) out.push({ id: "beta", label: "Early User", tone: "gold" });
+
+    const lvl = Number(userRec?.stats?.level || 1);
+    if (lvl >= 10) out.push({ id: "lv10", label: "Lv 10", tone: "blue" });
+    if (lvl >= 25) out.push({ id: "lv25", label: "Lv 25", tone: "purple" });
+    if (lvl >= 50) out.push({ id: "lv50", label: "Lv 50", tone: "red" });
+    if (lvl >= 75) out.push({ id: "lv75", label: "Lv 75", tone: "green" });
+    if (lvl >= 100) out.push({ id: "lv100", label: "Lv 100", tone: "gold" });
+
+    return out.slice(0, 10);
+  }
+
+  // -------------------- leaderboard --------------------
+  function getLeaderboard(limit = 25) {
+    const arr = Object.values(users)
+      .filter(u => u && u.passHash && !isGuestName(u.user))
+      .map(u => ({
+        user: u.user,
+        level: u.stats?.level || 1,
+        xp: u.stats?.xp || 0,
+        next: xpNeededForNext(u.stats?.level || 1),
+        messages: u.stats?.messages || 0
+      }));
+    arr.sort((a, b) => (b.level - a.level) || (b.xp - a.xp) || a.user.localeCompare(b.user));
+    return arr.slice(0, Math.max(5, Math.min(100, limit)));
+  }
+  socket.on("leaderboard:get", ({ limit }) => {
+    if (!requireAuth()) return;
+    socket.emit("leaderboard:data", { items: getLeaderboard(Number(limit) || 25) });
+  });
+
+  // -------------------- social sync --------------------
+  socket.on("social:sync", () => {
+    if (!requireNonGuest()) return;
+    socket.emit("social:update", users[authedUser].social);
+  });
+
+  // Block/unblock
+  socket.on("user:block", ({ user }) => {
+    if (!requireNonGuest()) return;
+    const target = String(user || "");
+    if (!users[target] || target === authedUser || isGuestName(target)) return;
+
+    const meRec = users[authedUser];
+    meRec.social.blocked ||= [];
+    if (!meRec.social.blocked.includes(target)) meRec.social.blocked.push(target);
+
+    meRec.social.friends = (meRec.social.friends || []).filter(x => x !== target);
+    meRec.social.incoming = (meRec.social.incoming || []).filter(x => x !== target);
+    meRec.social.outgoing = (meRec.social.outgoing || []).filter(x => x !== target);
+
+    persistUsers();
+    socket.emit("social:update", meRec.social);
+  });
+
+  socket.on("user:unblock", ({ user }) => {
+    if (!requireNonGuest()) return;
+    const target = String(user || "");
+    const meRec = users[authedUser];
+    meRec.social.blocked = (meRec.social.blocked || []).filter(x => x !== target);
+    persistUsers();
+    socket.emit("social:update", meRec.social);
+  });
+
+  // Friend requests
+  socket.on("friend:request", ({ to }) => {
+    if (!requireNonGuest()) return;
+    const target = String(to || "");
+    if (!users[target] || isGuestName(target) || !users[target].passHash) return socket.emit("sendError", { reason: "User not found." });
+    if (target === authedUser) return;
+
+    const meRec = users[authedUser];
+    const tRec = users[target];
+
+    if (tRec.settings?.allowFriendRequests === false) return socket.emit("sendError", { reason: "User has friend requests disabled." });
+    if ((meRec.social.blocked || []).includes(target)) return socket.emit("sendError", { reason: "Unblock user first." });
+    if ((tRec.social.blocked || []).includes(authedUser)) return socket.emit("sendError", { reason: "Cannot send request." });
+
+    meRec.social.friends ||= [];
+    meRec.social.outgoing ||= [];
+    tRec.social.incoming ||= [];
+
+    if (meRec.social.friends.includes(target)) return;
+    if (meRec.social.outgoing.includes(target)) return;
+
+    meRec.social.outgoing.push(target);
+    if (!tRec.social.incoming.includes(authedUser)) tRec.social.incoming.push(authedUser);
+
+    addInboxItem(target, {
+      id: nanoid(),
+      type: "friend",
+      from: authedUser,
+      text: `${authedUser} sent you a friend request`,
+      ts: now()
+    });
+
+    persistUsers();
+    socket.emit("social:update", meRec.social);
+    emitToUser(target, "social:update", tRec.social);
+    emitToUser(target, "inbox:badge", countInbox(tRec));
+    emitToUser(target, "inbox:data", { items: tRec.inbox });
+  });
+
+  socket.on("friend:accept", ({ from }) => {
+    if (!requireNonGuest()) return;
+    const src = String(from || "");
+    if (!users[src] || !users[src].passHash || isGuestName(src)) return;
+
+    const meRec = users[authedUser];
+    const sRec = users[src];
+
+    meRec.social.incoming = (meRec.social.incoming || []).filter(x => x !== src);
+    sRec.social.outgoing = (sRec.social.outgoing || []).filter(x => x !== authedUser);
+
+    meRec.social.friends ||= [];
+    sRec.social.friends ||= [];
+    if (!meRec.social.friends.includes(src)) meRec.social.friends.push(src);
+    if (!sRec.social.friends.includes(authedUser)) sRec.social.friends.push(authedUser);
+
+    meRec.inbox = (meRec.inbox || []).filter(it => !(it.type === "friend" && it.from === src));
+
+    persistUsers();
+    socket.emit("social:update", meRec.social);
+    emitToUser(src, "social:update", sRec.social);
+
+    socket.emit("inbox:badge", countInbox(meRec));
+    socket.emit("inbox:data", { items: meRec.inbox });
+  });
+
+  socket.on("friend:decline", ({ from }) => {
+    if (!requireNonGuest()) return;
+    const src = String(from || "");
+    if (!users[src] || !users[src].passHash || isGuestName(src)) return;
+
+    const meRec = users[authedUser];
+    const sRec = users[src];
+
+    meRec.social.incoming = (meRec.social.incoming || []).filter(x => x !== src);
+    sRec.social.outgoing = (sRec.social.outgoing || []).filter(x => x !== authedUser);
+    meRec.inbox = (meRec.inbox || []).filter(it => !(it.type === "friend" && it.from === src));
+
+    persistUsers();
+    socket.emit("social:update", meRec.social);
+    emitToUser(src, "social:update", sRec.social);
+
+    socket.emit("inbox:badge", countInbox(meRec));
+    socket.emit("inbox:data", { items: meRec.inbox });
+  });
+
+  // Inbox
+  socket.on("inbox:get", () => {
+    if (!requireNonGuest()) return;
+    const u = users[authedUser];
+    socket.emit("inbox:badge", countInbox(u));
+    socket.emit("inbox:data", { items: u.inbox || [] });
+  });
+
+  // -------------------- global chat --------------------
+  socket.on("requestGlobalHistory", () => {
+    socket.emit("history", globalHistory);
+  });
+
+  socket.on("sendGlobal", ({ text }) => {
+    if (!requireAuth()) return;
+    const t = String(text || "").trim();
+    if (!t || t.length > 1200) return;
+
+    const r = globalRate.get(authedUser) || { nextAllowed: 0, recent: [], lastMsgNorm: "", lastLinkAt: 0, lastMentionAt: 0, shadowMuteUntil: 0 };
+    globalRate.set(authedUser, r);
+
+    // Shadow mute logic
+    if (r.shadowMuteUntil && now() < r.shadowMuteUntil) {
+      // silently allow but only echo back to sender
+      const msg = { user: authedUser, text: t, ts: now() };
+      socket.emit("globalMessage", msg);
+      return;
+    }
+
+    // Severe content => shadow mute + do not broadcast + do not store
+    if (isSevereBad(t)) {
+      r.shadowMuteUntil = now() + SHADOW_MUTE_MS;
+      globalRate.set(authedUser, r);
+
+      // echo only
+      const msg = { user: authedUser, text: t, ts: now() };
+      socket.emit("globalMessage", msg);
+      socket.emit("warn", { kind: "shadow", text: "Message not delivered." });
+      return;
+    }
+
+    // Link rules
+    if (containsUrl(t)) {
+      if (!canPostLink(authedUser)) {
+        return socket.emit("sendError", { reason: "Link cooldown: you can post one link every 5 minutes." });
+      }
+      const urls = extractUrls(t);
+      for (const u of urls) {
+        if (BLOCKED_LINK_RX.test(u)) {
+          r.shadowMuteUntil = now() + SHADOW_MUTE_MS;
+          globalRate.set(authedUser, r);
+          socket.emit("warn", { kind: "shadow", text: "Message not delivered." });
+          // echo only
+          socket.emit("globalMessage", { user: authedUser, text: t, ts: now() });
+          return;
+        }
+      }
+      r.lastLinkAt = now();
+    }
+
+    // Repeat warning (same message twice)
+    const nm = normMsg(t);
+    if (nm && nm === r.lastMsgNorm) {
+      socket.emit("warn", { kind: "repeat", text: "Don’t repeat the same message." });
+    }
+    r.lastMsgNorm = nm;
+
+    // mention anti-spam: cap mentions per message, and rate-limit mention-bearing messages
+    const mentions = extractMentions(t).slice(0, 6);
+    const hasMentions = mentions.length > 0;
+    if (hasMentions) {
+      if (!canMention(authedUser)) {
+        return socket.emit("sendError", { reason: "Slow down on mentions." });
+      }
+      r.lastMentionAt = now();
+    }
+
+    // Dynamic cooldown
+    const cd = currentCooldownForUser(authedUser);
+    if (now() < (r.nextAllowed || 0)) {
+      const left = Math.max(0, (r.nextAllowed - now()) / 1000);
+      sendCooldown();
+      return socket.emit("sendError", { reason: `Cooldown active (${left.toFixed(1)}s left).` });
+    }
+
+    r.nextAllowed = now() + cd * 1000;
+    touchGlobalSend(authedUser);
+    sendCooldown();
+
+    const msg = { user: authedUser, text: t, ts: now() };
+    pushGlobalMessage(msg);
+
+    // stats
+    if (requireNonGuest()) {
+      const xpInfo = awardXP(authedUser, 6);
+      if (xpInfo) emitToUser(authedUser, "me:stats", xpInfo);
+    }
+    users[authedUser].lastSeen = now();
+    persistUsers();
+
+    io.emit("globalMessage", msg);
+
+    // mentions -> inbox
+    for (const m of mentions) {
+      if (!users[m] || m === authedUser || !users[m].passHash || isGuestName(m)) continue;
+      const rec = users[m];
+      if ((rec.social?.blocked || []).includes(authedUser)) continue;
+
+      addInboxItem(m, {
+        id: nanoid(),
+        type: "mention",
+        from: authedUser,
+        text: `Mentioned you in #global: ${t.slice(0, 160)}`,
         ts: now(),
-      };
-      localStorage.setItem("tonkotsu_session", JSON.stringify(obj));
-    } catch {}
-  }
-  function loadSession() {
-    try {
-      const raw = localStorage.getItem("tonkotsu_session");
-      if (!raw) return null;
-      const obj = JSON.parse(raw);
-      if (!obj?.token) return null;
-      return obj;
-    } catch {
-      return null;
+        meta: { scope: "global" }
+      });
+      emitToUser(m, "inbox:badge", countInbox(rec));
+      emitToUser(m, "inbox:data", { items: rec.inbox });
     }
-  }
-  function clearSession() {
-    try {
-      localStorage.removeItem("tonkotsu_session");
-    } catch {}
-  }
+  });
 
-  /* ---------------------------- loading UI ----------------------------- */
-  const Loading = (() => {
-    let overlay = el.loadingOverlay;
-    let labelEl = null;
-    let detailEl = null;
-    let spinnerEl = null;
+  // -------------------- DM --------------------
+  socket.on("dm:history", ({ withUser }) => {
+    if (!requireNonGuest()) return;
+    const other = String(withUser || "");
+    if (!users[other] || !users[other].passHash || isGuestName(other)) return socket.emit("dm:history", { withUser: other, msgs: [] });
 
-    let active = false;
-    let watchdog = null;
-    let startedAt = 0;
+    const meRec = users[authedUser];
+    const otherRec = users[other];
 
-    function ensureOverlay() {
-      overlay = overlay || $("#loadingOverlay");
-      if (overlay) return;
+    // must be friends to DM
+    const friends = new Set(meRec.social?.friends || []);
+    if (!friends.has(other)) return socket.emit("dm:history", { withUser: other, msgs: [] });
 
-      overlay = document.createElement("div");
-      overlay.id = "loadingOverlay";
-      overlay.innerHTML = `
-        <div class="loadingCard">
-          <div class="loadingSpinner" aria-hidden="true"></div>
-          <div class="loadingText">
-            <div class="loadingLabel">Loading…</div>
-            <div class="loadingDetail">Please wait</div>
-          </div>
-        </div>
-      `;
-      document.body.appendChild(overlay);
+    if ((meRec.social?.blocked || []).includes(other)) return socket.emit("dm:history", { withUser: other, msgs: [] });
+    if ((otherRec.social?.blocked || []).includes(authedUser)) return socket.emit("dm:history", { withUser: other, msgs: [] });
+
+    socket.emit("dm:history", { withUser: other, msgs: ensureDMStore(authedUser, other) });
+  });
+
+  socket.on("dm:send", ({ to, text }) => {
+    if (!requireNonGuest()) return;
+    const other = String(to || "");
+    const t = String(text || "").trim();
+    if (!t || t.length > 1200) return;
+    if (!users[other] || !users[other].passHash || isGuestName(other)) return;
+
+    const meRec = users[authedUser];
+    const otherRec = users[other];
+
+    // must be friends to DM
+    const friends = new Set(meRec.social?.friends || []);
+    if (!friends.has(other)) return socket.emit("sendError", { reason: "You must be friends to DM." });
+
+    if ((meRec.social?.blocked || []).includes(other)) return;
+    if ((otherRec.social?.blocked || []).includes(authedUser)) return;
+
+    // Shadow mute severe content
+    const r = globalRate.get(authedUser) || {};
+    if (r.shadowMuteUntil && now() < r.shadowMuteUntil) {
+      // only echo back
+      socket.emit("dm:message", { from: other, msg: { user: authedUser, text: t, ts: now() } });
+      return;
     }
-
-    function cacheParts() {
-      if (!overlay) return;
-      labelEl = overlay.querySelector(".loadingLabel");
-      detailEl = overlay.querySelector(".loadingDetail");
-      spinnerEl = overlay.querySelector(".loadingSpinner");
-    }
-
-    function setText(label, detail) {
-      if (labelEl) labelEl.textContent = safeText(label, 80);
-      if (detailEl) detailEl.textContent = safeText(detail, 140);
+    if (isSevereBad(t)) {
+      r.shadowMuteUntil = now() + SHADOW_MUTE_MS;
+      globalRate.set(authedUser, r);
+      socket.emit("warn", { kind: "shadow", text: "Message not delivered." });
+      socket.emit("dm:message", { from: other, msg: { user: authedUser, text: t, ts: now() } });
+      return;
     }
 
-    function showLoading(label = "Loading…", detail = "Please wait") {
-      ensureOverlay();
-      cacheParts();
-
-      active = true;
-      startedAt = now();
-      setText(label, detail);
-
-      overlay.classList.add("show");
-      overlay.setAttribute("aria-hidden", "false");
-
-      // Watchdog prevents “perma loading” and the “timing out” feel.
-      if (watchdog) clearInterval(watchdog);
-      watchdog = setInterval(() => {
-        if (!active) return;
-        const elapsed = now() - startedAt;
-
-        // If we’re stuck > 15s, show a recovery hint but DO NOT block the app.
-        if (elapsed > 15000) {
-          setText("Still loading…", "If this keeps happening, refresh. Your connection may be blocked.");
-          // after 22s, auto-hide to avoid trapping user
-          if (elapsed > 22000) {
-            hideLoading();
-            toast("Loading took too long. Try refreshing if something looks broken.", "error");
-          }
-        }
-      }, 900);
-    }
-
-    function hideLoading() {
-      ensureOverlay();
-      active = false;
-      overlay.classList.remove("show");
-      overlay.setAttribute("aria-hidden", "true");
-      if (watchdog) clearInterval(watchdog);
-      watchdog = null;
-    }
-
-    return { show: showLoading, hide: hideLoading, setText };
-  })();
-
-  /* ---------------------------- custom cursor -------------------------- */
-  const Cursor = (() => {
-    let enabled = false;
-    let layer = null;
-
-    // smooth movement
-    let targetX = 0,
-      targetY = 0;
-    let curX = 0,
-      curY = 0;
-    let raf = 0;
-
-    function ensure() {
-      if (layer) return;
-      layer = document.createElement("div");
-      layer.id = "tonkotsuCursor";
-      layer.innerHTML = `
-        <div class="cursorDot"></div>
-        <div class="cursorRing"></div>
-      `;
-      document.body.appendChild(layer);
-
-      // Force CSS in case your stylesheet doesn’t include it.
-      // This is intentionally verbose to “just work”.
-      const style = document.createElement("style");
-      style.textContent = `
-        #tonkotsuCursor{
-          position:fixed; left:0; top:0; width:1px; height:1px;
-          pointer-events:none; z-index:2147483647;
-          transform: translate3d(-100px,-100px,0);
-        }
-        #tonkotsuCursor .cursorDot{
-          position:absolute; left:-4px; top:-4px; width:8px; height:8px;
-          border-radius:99px; background: rgba(255,255,255,.95);
-          box-shadow: 0 0 12px rgba(0,0,0,.35);
-        }
-        #tonkotsuCursor .cursorRing{
-          position:absolute; left:-18px; top:-18px; width:36px; height:36px;
-          border-radius:999px; border: 2px solid rgba(255,255,255,.55);
-          box-shadow: 0 0 20px rgba(0,0,0,.25);
-          transform: translateZ(0);
-        }
-        body.tonkotsuCursorOn, body.tonkotsuCursorOn * { cursor: none !important; }
-        body.tonkotsuCursorOn a, body.tonkotsuCursorOn button { cursor: none !important; }
-      `;
-      document.head.appendChild(style);
-
-      // Input events
-      window.addEventListener(
-        "mousemove",
-        (e) => {
-          targetX = e.clientX;
-          targetY = e.clientY;
-          if (!raf) raf = requestAnimationFrame(tick);
-        },
-        { passive: true }
-      );
-
-      window.addEventListener(
-        "mousedown",
-        () => layer?.classList.add("down"),
-        { passive: true }
-      );
-      window.addEventListener(
-        "mouseup",
-        () => layer?.classList.remove("down"),
-        { passive: true }
-      );
-
-      document.addEventListener(
-        "mouseleave",
-        () => {
-          if (!layer) return;
-          layer.style.opacity = "0";
-        },
-        { passive: true }
-      );
-      document.addEventListener(
-        "mouseenter",
-        () => {
-          if (!layer) return;
-          layer.style.opacity = "1";
-        },
-        { passive: true }
-      );
-    }
-
-    function tick() {
-      raf = 0;
-      if (!enabled || !layer) return;
-
-      // smoothing (slower if reduced motion)
-      const ease = prefersReducedMotion ? 0.6 : 0.22;
-      curX += (targetX - curX) * ease;
-      curY += (targetY - curY) * ease;
-
-      layer.style.transform = `translate3d(${curX}px, ${curY}px, 0)`;
-
-      // keep animating if not yet close
-      const dx = Math.abs(targetX - curX);
-      const dy = Math.abs(targetY - curY);
-      if (dx + dy > 0.3) raf = requestAnimationFrame(tick);
-    }
-
-    function set(on) {
-      const should =
-        !!on && !isTouchLike && !prefersReducedMotion && window.innerWidth >= 820;
-
-      enabled = should;
-      if (enabled) {
-        ensure();
-        document.body.classList.add("tonkotsuCursorOn");
-        layer.style.display = "";
-        layer.style.opacity = "1";
-      } else {
-        document.body.classList.remove("tonkotsuCursorOn");
-        if (layer) layer.style.display = "none";
-      }
-    }
-
-    return { set };
-  })();
-
-  /* -------------------------- cooldown bar UI -------------------------- */
-  const Cooldown = (() => {
-    let wrap = el.cooldownBarWrap;
-    let bar = el.cooldownBar;
-
-    let shakeTimer = null;
-
-    function ensure() {
-      wrap = wrap || $("#cooldownBarWrap");
-      bar = bar || $("#cooldownBar");
-
-      if (!wrap) {
-        // create minimal container if missing
-        wrap = document.createElement("div");
-        wrap.id = "cooldownBarWrap";
-        wrap.className = "cooldownWrap";
-        wrap.innerHTML = `<div id="cooldownBar" class="cooldownBar"></div>`;
-        bar = wrap.querySelector("#cooldownBar");
-        const host = document.body;
-        host.appendChild(wrap);
-
-        const style = document.createElement("style");
-        style.textContent = `
-          .cooldownWrap{
-            position: fixed; left: 50%; transform: translateX(-50%);
-            bottom: 18px; width: min(520px, 92vw);
-            height: 10px; border-radius: 999px;
-            background: rgba(255,255,255,.08);
-            box-shadow: 0 10px 30px rgba(0,0,0,.35);
-            overflow: hidden; z-index: 9999;
-            backdrop-filter: blur(10px);
-            display:none;
-          }
-          .cooldownWrap.show{ display:block; }
-          .cooldownBar{
-            height:100%; width:0%;
-            background: rgba(255,255,255,.75);
-            border-radius:999px;
-            transform-origin:left;
-          }
-          .cooldownWrap.shake{
-            animation: cdshake .35s linear;
-            background: rgba(255,0,0,.22);
-          }
-          @keyframes cdshake{
-            0%{ transform: translateX(-50%) translateY(0) translateX(0); }
-            20%{ transform: translateX(-50%) translateX(-8px); }
-            40%{ transform: translateX(-50%) translateX(8px); }
-            60%{ transform: translateX(-50%) translateX(-6px); }
-            80%{ transform: translateX(-50%) translateX(6px); }
-            100%{ transform: translateX(-50%) translateX(0); }
-          }
-        `;
-        document.head.appendChild(style);
-      }
-    }
-
-    function setCooldown(seconds) {
-      seconds = clamp(Number(seconds) || 3, 0.5, 30);
-      state.cooldown.seconds = seconds;
-    }
-
-    function triggerSendAttemptBlocked() {
-      ensure();
-      wrap.classList.add("show");
-      wrap.classList.add("shake");
-      bar.style.width = "100%";
-      bar.style.opacity = "1";
-      bar.style.background = "rgba(255,0,0,.85)";
-
-      if (shakeTimer) clearTimeout(shakeTimer);
-      shakeTimer = setTimeout(() => {
-        wrap.classList.remove("shake");
-        // fade back to normal
-        bar.style.transition = "opacity 650ms ease";
-        bar.style.opacity = "0.75";
-        bar.style.background = "rgba(255,255,255,.75)";
-        setTimeout(() => {
-          bar.style.transition = "";
-        }, 700);
-      }, 420);
-    }
-
-    function start() {
-      ensure();
-      const cd = state.cooldown.seconds;
-      const startAt = now();
-      state.cooldown.nextAllowedAt = startAt + cd * 1000;
-
-      wrap.classList.add("show");
-      bar.style.width = "0%";
-      bar.style.opacity = "1";
-      bar.style.background = "rgba(255,255,255,.75)";
-
-      const tick = () => {
-        const t = now();
-        const total = cd * 1000;
-        const p = clamp((t - startAt) / total, 0, 1);
-        bar.style.width = `${(p * 100).toFixed(1)}%`;
-        if (p < 1) requestAnimationFrame(tick);
-        else {
-          // hide after short grace
-          setTimeout(() => wrap.classList.remove("show"), 250);
-        }
-      };
-      requestAnimationFrame(tick);
-    }
-
-    function canSendNow() {
-      return now() >= (state.cooldown.nextAllowedAt || 0);
-    }
-
-    return { setCooldown, start, canSendNow, blocked: triggerSendAttemptBlocked };
-  })();
-
-  /* ------------------------ Socket.IO connection ----------------------- */
-  function connectSocket() {
-    // Assumes socket.io client is loaded and available as `io`.
-    if (typeof window.io !== "function") {
-      toast("Socket.IO client not loaded. Check your index.html includes /socket.io/socket.io.js", "error");
-      return null;
-    }
-
-    const sock = window.io({
-      transports: ["websocket", "polling"],
-      reconnection: true,
-      reconnectionAttempts: 999,
-      reconnectionDelay: 450,
-      reconnectionDelayMax: 2200,
-      timeout: 20000,
-    });
-
-    state.socket = sock;
-
-    sock.on("connect", () => {
-      state.connected = true;
-      state.gates.socketConnected = true;
-
-      // Emit hello immediately so the server can log IP/UA for bot detection.
-      emitHello("connect");
-
-      // Attempt resume if a token exists and we are not authed yet.
-      if (!state.me.username && !state.me.guest) {
-        const sess = loadSession();
-        if (sess?.token) {
-          Loading.show("Resuming…", "Restoring your session");
-          sock.emit("resume", { token: sess.token });
+    // Link rules
+    if (containsUrl(t)) {
+      if (!canPostLink(authedUser)) return socket.emit("sendError", { reason: "Link cooldown: one link every 5 minutes." });
+      const urls = extractUrls(t);
+      for (const u of urls) {
+        if (BLOCKED_LINK_RX.test(u)) {
+          r.shadowMuteUntil = now() + SHADOW_MUTE_MS;
+          globalRate.set(authedUser, r);
+          socket.emit("warn", { kind: "shadow", text: "Message not delivered." });
+          socket.emit("dm:message", { from: other, msg: { user: authedUser, text: t, ts: now() } });
+          return;
         }
       }
-    });
-
-    sock.on("disconnect", (reason) => {
-      state.connected = false;
-      toast(`Disconnected: ${reason}`, "error");
-    });
-
-    sock.on("connect_error", (err) => {
-      toast(`Connection error: ${err?.message || err}`, "error");
-      // Never leave loading overlay stuck
-      Loading.hide();
-    });
-
-    // ---- auth responses ----
-    sock.on("resumeFail", () => {
-      clearSession();
-      Loading.hide();
-      show(el.loginView);
-      hide(el.appView);
-      toast("Session expired. Please log in again.", "error");
-    });
-
-    sock.on("loginError", (msg) => {
-      Loading.hide();
-      if (el.loginError) el.loginError.textContent = safeText(msg, 160);
-      toast(msg, "error");
-    });
-
-    sock.on("loginSuccess", (payload) => {
-      // This is where your loading screen used to trap users.
-      // We now treat loginSuccess as one “gate” and release once the other gates finish.
-      state.gates.loginSuccess = true;
-
-      state.me.username = payload?.username || null;
-      state.me.guest = !!payload?.guest;
-      state.me.token = payload?.token || null;
-      state.me.settings = payload?.settings || state.me.settings;
-
-      if (state.me.token) saveSession();
-
-      // Apply cursor setting immediately
-      Cursor.set(!!state.me.settings?.customCursor);
-
-      // After login, send hello again with auth context (server can correlate).
-      emitHello(payload?.firstTime ? "new_account" : "login");
-
-      // Switch UI
-      hide(el.loginView);
-      show(el.appView);
-
-      // Start “between login and messages” loader, but it will auto-release.
-      Loading.show("Entering messages…", "Loading chat data");
-
-      // Gate: request global history and wait for it.
-      state.gates.historyLoaded = false;
-      state.socket.emit("requestGlobalHistory");
-
-      // Ensure UI mount gate becomes true (DOM is present)
-      state.gates.uiMounted = true;
-
-      // If first time, show welcome popup (client-side).
-      if (payload?.firstTime && !payload?.guest) {
-        setTimeout(() => showWelcomePopup(), 400);
-      }
-
-      // Refresh inbox badge, etc. (non-blocking)
-      if (!payload?.guest) {
-        state.socket.emit("inbox:get");
-        state.socket.emit("security:get");
-      }
-
-      attemptReleaseLoading();
-    });
-
-    // ---- global history + messages ----
-    sock.on("history", (arr) => {
-      renderGlobalHistory(Array.isArray(arr) ? arr : []);
-      state.gates.historyLoaded = true;
-      attemptReleaseLoading();
-    });
-
-    sock.on("globalMessage", (msg) => {
-      renderGlobalMessage(msg);
-    });
-
-    // ---- cooldown updates ----
-    sock.on("cooldown:update", ({ seconds }) => {
-      state.cooldown.lastServerPushAt = now();
-      Cooldown.setCooldown(seconds);
-    });
-
-    // ---- inbox ----
-    sock.on("inbox:badge", (badge) => {
-      const total = Number(badge?.total || 0);
-      if (el.inboxBadge) {
-        el.inboxBadge.textContent = total > 99 ? "99+" : String(total);
-        el.inboxBadge.style.display = total > 0 ? "" : "none";
-      }
-    });
-
-    // ---- warnings/errors ----
-    sock.on("sendError", ({ reason }) => {
-      const r = reason || "Send failed.";
-      toast(r, "error");
-      // Shake cooldown bar if it was a cooldown block
-      if (/cooldown/i.test(r)) Cooldown.blocked();
-    });
-
-    sock.on("warn", (w) => {
-      if (!w?.text) return;
-      toast(w.text, "info");
-    });
-
-    // ---- settings ----
-    sock.on("settings", (s) => {
-      state.me.settings = { ...state.me.settings, ...(s || {}) };
-      Cursor.set(!!state.me.settings?.customCursor);
-    });
-
-    // Visibility logging for bot detection (server can correlate)
-    document.addEventListener("visibilitychange", () => {
-      if (document.visibilityState === "visible") emitHello("tab_visible");
-    });
-
-    return sock;
-  }
-
-  function emitHello(reason) {
-    if (!state.socket || !state.socket.connected) return;
-
-    // Server uses handshake IP/UA; client provides extra “browser signal” only.
-    const payload = {
-      reason: String(reason || "hello"),
-      pageId: state.page.id,
-      openedAt: state.page.openedAt,
-      clientTs: now(),
-      tz: Intl.DateTimeFormat().resolvedOptions().timeZone || null,
-      locale: navigator.language || null,
-      referrer: document.referrer ? safeText(document.referrer, 200) : null,
-      path: location.pathname + location.search,
-      screen: {
-        w: window.screen?.width || null,
-        h: window.screen?.height || null,
-        dpr: window.devicePixelRatio || 1,
-      },
-      view: {
-        w: window.innerWidth,
-        h: window.innerHeight,
-      },
-      auth: state.me.username ? { user: state.me.username, guest: !!state.me.guest } : null,
-    };
-
-    // NOTE: You MUST add `socket.on("client:hello", ...)` in server.js
-    state.socket.emit("client:hello", payload);
-  }
-
-  /* --------------------- robust loading release logic ------------------ */
-  function attemptReleaseLoading() {
-    // Release when the key gates are true.
-    const ok =
-      state.gates.socketConnected &&
-      state.gates.loginSuccess &&
-      state.gates.historyLoaded &&
-      state.gates.uiMounted;
-
-    if (ok) {
-      // Delay slightly so UI feels intentional and avoids “flash”
-      setTimeout(() => Loading.hide(), 200);
-    }
-  }
-
-  /* ------------------------------ rendering ---------------------------- */
-  function ensureGlobalList() {
-    if (el.globalList) return el.globalList;
-    const found = $("#globalList");
-    if (found) return (el.globalList = found);
-
-    // create minimal list if missing
-    const div = document.createElement("div");
-    div.id = "globalList";
-    div.className = "globalList";
-    document.body.appendChild(div);
-    el.globalList = div;
-    return div;
-  }
-
-  function renderGlobalHistory(messages) {
-    const list = ensureGlobalList();
-    list.innerHTML = "";
-    for (const m of messages) renderGlobalMessage(m, true);
-    // Scroll bottom
-    list.scrollTop = list.scrollHeight;
-  }
-
-  function formatTime(ts) {
-    try {
-      const d = new Date(Number(ts) || Date.now());
-      const hh = String(d.getHours()).padStart(2, "0");
-      const mm = String(d.getMinutes()).padStart(2, "0");
-      return `${hh}:${mm}`;
-    } catch {
-      return "";
-    }
-  }
-
-  function renderGlobalMessage(msg, skipScroll = false) {
-    const list = ensureGlobalList();
-    const user = safeText(msg?.user || "Unknown", 24);
-    const text = String(msg?.text || "");
-    const ts = Number(msg?.ts || Date.now());
-
-    const item = document.createElement("div");
-    item.className = "gmsg";
-
-    // Content embeds: light client-side preview (server should also guard)
-    const hasUrl = /(https?:\/\/|www\.)/i.test(text);
-    let embedHtml = "";
-    if (hasUrl) {
-      const urls = (text.match(/\bhttps?:\/\/[^\s<>"')\]]+/gi) || []).slice(0, 1);
-      if (urls.length) {
-        const u = urls[0];
-        const safeU = u.replace(/"/g, "%22");
-        embedHtml = `
-          <div class="embed">
-            <div class="embedLeft"></div>
-            <div class="embedBody">
-              <div class="embedTitle">Link</div>
-              <a class="embedLink" href="${safeU}" target="_blank" rel="noopener noreferrer">${safeText(u, 80)}</a>
-            </div>
-          </div>
-        `;
-      }
+      r.lastLinkAt = now();
+      globalRate.set(authedUser, r);
     }
 
-    item.innerHTML = `
-      <div class="gmsgTop">
-        <div class="gmsgUser">${user}</div>
-        <div class="gmsgTime">${formatTime(ts)}</div>
-      </div>
-      <div class="gmsgText"></div>
-      ${embedHtml}
-    `;
+    // repeat warning
+    const dmKey = `dm:${other}`;
+    const last = meRec._lastMsgByScope || {};
+    const nm = normMsg(t);
+    if (nm && last[dmKey] && last[dmKey] === nm) socket.emit("warn", { kind: "repeat", text: "Don’t repeat the same message." });
+    last[dmKey] = nm;
+    meRec._lastMsgByScope = last;
 
-    // Insert text safely
-    const textEl = item.querySelector(".gmsgText");
-    if (textEl) textEl.textContent = text;
+    const msg = { user: authedUser, text: t, ts: now() };
+    pushDM(authedUser, other, msg);
 
-    list.appendChild(item);
+    const xpInfo = awardXP(authedUser, 4);
+    if (xpInfo) emitToUser(authedUser, "me:stats", xpInfo);
 
-    if (!skipScroll) list.scrollTop = list.scrollHeight;
-  }
+    users[authedUser].lastSeen = now();
+    persistUsers();
 
-  /* ------------------------------ sending ------------------------------ */
-  function wireGlobalSend() {
-    const input = el.globalInput || $("#globalInput");
-    const btn = el.globalSendBtn || $("#globalSendBtn");
+    emitToUser(other, "dm:message", { from: authedUser, msg });
+    socket.emit("dm:message", { from: other, msg });
 
-    const send = () => {
-      if (!state.socket || !state.socket.connected) {
-        toast("Not connected.", "error");
-        return;
-      }
-      if (!state.me.username) {
-        toast("Log in first.", "error");
-        return;
-      }
+    // mentions -> inbox
+    const mentions = extractMentions(t).slice(0, 6);
+    if (mentions.length) {
+      const rr = globalRate.get(authedUser) || {};
+      if (!canMention(authedUser)) return; // silent drop mentions, message still sent
+      rr.lastMentionAt = now();
+      globalRate.set(authedUser, rr);
+    }
 
-      if (!Cooldown.canSendNow()) {
-        Cooldown.blocked();
-        return;
-      }
+    for (const m of mentions) {
+      if (!users[m] || m === authedUser || !users[m].passHash || isGuestName(m)) continue;
+      const rec = users[m];
+      if ((rec.social?.blocked || []).includes(authedUser)) continue;
 
-      const text = safeText(input?.value || "", 1200);
-      if (!text) return;
+      addInboxItem(m, {
+        id: nanoid(),
+        type: "mention",
+        from: authedUser,
+        text: `Mentioned you in a DM: ${t.slice(0, 160)}`,
+        ts: now(),
+        meta: { scope: "dm", with: other }
+      });
+      emitToUser(m, "inbox:badge", countInbox(rec));
+      emitToUser(m, "inbox:data", { items: rec.inbox });
+    }
+  });
 
-      // Start local bar immediately; server enforces final cooldown.
-      Cooldown.start();
+  // -------------------- groups: list + discover --------------------
+  socket.on("groups:list", () => {
+    if (!requireNonGuest()) return;
+    const list = Object.values(groups)
+      .map(ensureGroupDefaults)
+      .filter(g => Array.isArray(g.members) && g.members.includes(authedUser))
+      .map(groupPublic)
+      .sort((a, b) => a.name.localeCompare(b.name));
+    socket.emit("groups:list", list);
+  });
 
-      // Send with extra metadata to help server log to Discord “rich”
-      state.socket.emit("sendGlobal", {
-        text,
-        clientTs: now(),
-        pageId: state.page.id,
+  socket.on("groups:discover", () => {
+    if (!requireNonGuest()) return;
+    const items = Object.values(groups)
+      .map(ensureGroupDefaults)
+      .filter(g => g.privacy === "public")
+      .map(g => ({
+        id: g.id,
+        name: g.name,
+        owner: g.owner,
+        members: (g.members || []).length
+      }))
+      .sort((a, b) => (b.members - a.members) || a.name.localeCompare(b.name))
+      .slice(0, 80);
+
+    socket.emit("groups:discover:data", { items });
+  });
+
+  // Create group
+  socket.on("group:createRequest", ({ name, invites, privacy }) => {
+    if (!requireNonGuest()) return;
+
+    const groupName = String(name || "").trim() || "group";
+    const priv = (privacy === "public") ? "public" : "private";
+
+    const rawInv = Array.isArray(invites) ? invites : [];
+    const uniq = Array.from(new Set(rawInv.map(x => String(x || "").trim()).filter(Boolean))).slice(0, 50);
+
+    // invites must be valid + real + non-guest + friends with creator + target allows group invites
+    const meRec = users[authedUser];
+    const myFriends = new Set(meRec.social?.friends || []);
+
+    for (const u of uniq) {
+      if (!isValidUser(u) || !users[u] || !users[u].passHash || isGuestName(u)) return socket.emit("sendError", { reason: "Invalid invite list." });
+      if (!myFriends.has(u)) return socket.emit("sendError", { reason: "You can only invite friends to a group." });
+      if (users[u].settings?.allowGroupInvites === false) return socket.emit("sendError", { reason: `User ${u} has group invites disabled.` });
+    }
+
+    const gid = `grp_${nanoid(12)}`;
+    groups[gid] = ensureGroupDefaults({
+      id: gid,
+      name: groupName.slice(0, 32),
+      owner: authedUser,
+      privacy: priv,
+      members: [authedUser],
+      invites: [],
+      createdAt: now(),
+      messages: [],
+      joinRequests: [],
+      cooldownSec: 2.5,
+      cooldownEnabled: true,
+      mutedAll: false,
+      mutedUsers: [],
+      unmutedWhileMutedAll: [],
+      perms: { invite: [] },
+      memberCooldown: {}
+    });
+
+    // send invites into inbox
+    for (const u of uniq) {
+      const invId = `inv_${nanoid(12)}`;
+      groups[gid].invites.push({ id: invId, to: u, from: authedUser, ts: now() });
+
+      addInboxItem(u, {
+        id: invId,
+        type: "group",
+        from: authedUser,
+        text: `Invited you to “${groups[gid].name}”`,
+        ts: now(),
+        meta: { groupId: gid, name: groups[gid].name }
       });
 
-      if (input) input.value = "";
-    };
+      const rec = users[u];
+      emitToUser(u, "inbox:badge", countInbox(rec));
+      emitToUser(u, "inbox:data", { items: rec.inbox });
+    }
 
-    if (btn) btn.addEventListener("click", send);
+    persistGroups();
+    socket.emit("groups:list", Object.values(groups).map(ensureGroupDefaults).filter(g => g.members.includes(authedUser)).map(groupPublic));
+    socket.emit("group:meta", { groupId: gid, meta: groupPublic(groups[gid]) });
+  });
 
-    if (input) {
-      input.addEventListener("keydown", (e) => {
-        if (e.key === "Enter" && !e.shiftKey) {
-          e.preventDefault();
-          send();
+  // Join public group
+  socket.on("group:joinPublic", ({ groupId }) => {
+    if (!requireNonGuest()) return;
+    const gid = String(groupId || "");
+    const g = groups[gid];
+    if (!g) return;
+    ensureGroupDefaults(g);
+
+    if (g.privacy !== "public") return socket.emit("sendError", { reason: "This group is not public." });
+    if ((g.members || []).length >= 200) return socket.emit("sendError", { reason: "Group is full (200 cap)." });
+
+    if (!g.members.includes(authedUser)) g.members.push(authedUser);
+
+    persistGroups();
+    const meta = groupPublic(g);
+    for (const m of g.members) emitToUser(m, "group:meta", { groupId: g.id, meta });
+
+    socket.emit("groups:list", Object.values(groups).map(ensureGroupDefaults).filter(x => x.members.includes(authedUser)).map(groupPublic));
+  });
+
+  // Accept/decline group invite
+  socket.on("groupInvite:accept", ({ id }) => {
+    if (!requireNonGuest()) return;
+    const inviteId = String(id || "");
+    let gFound = null;
+
+    for (const g of Object.values(groups)) {
+      ensureGroupDefaults(g);
+      const inv = (g.invites || []).find(x => x.id === inviteId && x.to === authedUser);
+      if (inv) { gFound = g; break; }
+    }
+    if (!gFound) return;
+
+    if ((gFound.members || []).length >= 200) return socket.emit("sendError", { reason: "Group is full (200 cap)." });
+
+    if (!gFound.members.includes(authedUser)) gFound.members.push(authedUser);
+    gFound.invites = (gFound.invites || []).filter(x => x.id !== inviteId);
+
+    const meRec = users[authedUser];
+    meRec.inbox = (meRec.inbox || []).filter(it => it.id !== inviteId);
+
+    persistUsers();
+    persistGroups();
+
+    const meta = groupPublic(gFound);
+    for (const m of gFound.members) emitToUser(m, "group:meta", { groupId: gFound.id, meta });
+
+    socket.emit("inbox:badge", countInbox(meRec));
+    socket.emit("inbox:data", { items: meRec.inbox });
+    socket.emit("groups:list", Object.values(groups).map(ensureGroupDefaults).filter(g => g.members.includes(authedUser)).map(groupPublic));
+  });
+
+  socket.on("groupInvite:decline", ({ id }) => {
+    if (!requireNonGuest()) return;
+    const inviteId = String(id || "");
+
+    let gFound = null;
+    for (const g of Object.values(groups)) {
+      ensureGroupDefaults(g);
+      const inv = (g.invites || []).find(x => x.id === inviteId && x.to === authedUser);
+      if (inv) { gFound = g; break; }
+    }
+    if (!gFound) return;
+
+    gFound.invites = (gFound.invites || []).filter(x => x.id !== inviteId);
+    const meRec = users[authedUser];
+    meRec.inbox = (meRec.inbox || []).filter(it => it.id !== inviteId);
+
+    persistUsers();
+    persistGroups();
+    socket.emit("inbox:badge", countInbox(meRec));
+    socket.emit("inbox:data", { items: meRec.inbox });
+  });
+
+  // Group history
+  socket.on("group:history", ({ groupId }) => {
+    if (!requireNonGuest()) return;
+    const gid = String(groupId || "");
+    const g = groups[gid];
+    if (!g) return;
+    ensureGroupDefaults(g);
+    if (!g.members.includes(authedUser)) return;
+
+    socket.emit("group:history", { groupId: gid, meta: groupPublic(g), msgs: g.messages });
+  });
+
+  // Group send
+  socket.on("group:send", ({ groupId, text }) => {
+    if (!requireNonGuest()) return;
+    const gid = String(groupId || "");
+    const g = groups[gid];
+    if (!g) return;
+    ensureGroupDefaults(g);
+    if (!g.members.includes(authedUser)) return;
+
+    const t = String(text || "").trim();
+    if (!t || t.length > 1200) return;
+
+    // Shadow mute severe content
+    const r = globalRate.get(authedUser) || {};
+    if (r.shadowMuteUntil && now() < r.shadowMuteUntil) {
+      socket.emit("group:message", { groupId: gid, msg: { user: authedUser, text: t, ts: now() } });
+      return;
+    }
+    if (isSevereBad(t)) {
+      r.shadowMuteUntil = now() + SHADOW_MUTE_MS;
+      globalRate.set(authedUser, r);
+      socket.emit("warn", { kind: "shadow", text: "Message not delivered." });
+      socket.emit("group:message", { groupId: gid, msg: { user: authedUser, text: t, ts: now() } });
+      return;
+    }
+
+    // Link rules
+    if (containsUrl(t)) {
+      if (!canPostLink(authedUser)) return socket.emit("sendError", { reason: "Link cooldown: one link every 5 minutes." });
+      const urls = extractUrls(t);
+      for (const u of urls) {
+        if (BLOCKED_LINK_RX.test(u)) {
+          r.shadowMuteUntil = now() + SHADOW_MUTE_MS;
+          globalRate.set(authedUser, r);
+          socket.emit("warn", { kind: "shadow", text: "Message not delivered." });
+          socket.emit("group:message", { groupId: gid, msg: { user: authedUser, text: t, ts: now() } });
+          return;
         }
+      }
+      r.lastLinkAt = now();
+      globalRate.set(authedUser, r);
+    }
+
+    // mute rules
+    if (g.owner !== authedUser) {
+      if ((g.mutedUsers || []).includes(authedUser)) return socket.emit("sendError", { reason: "You are muted in this group." });
+
+      if (g.mutedAll) {
+        const allow = (g.unmutedWhileMutedAll || []).includes(authedUser);
+        if (!allow) return socket.emit("sendError", { reason: "Group is muted by the owner." });
+      }
+    }
+
+    // repeat warning
+    const meRec = users[authedUser];
+    const last = meRec._lastMsgByScope || {};
+    const nm = normMsg(t);
+    const scopeKey = `grp:${gid}`;
+    if (nm && last[scopeKey] && last[scopeKey] === nm) socket.emit("warn", { kind: "repeat", text: "Don’t repeat the same message." });
+    last[scopeKey] = nm;
+    meRec._lastMsgByScope = last;
+
+    // mentions anti-spam
+    const mentions = extractMentions(t).slice(0, 6);
+    if (mentions.length) {
+      if (!canMention(authedUser)) return socket.emit("sendError", { reason: "Slow down on mentions." });
+      const rr = globalRate.get(authedUser) || {};
+      rr.lastMentionAt = now();
+      globalRate.set(authedUser, rr);
+    }
+
+    // group cooldown
+    const cdDefault = Math.max(0, Math.min(10, Number(g.cooldownSec || 2.5)));
+    const cdEnabled = (g.cooldownEnabled !== false);
+    const override = Number(g.memberCooldown?.[authedUser]);
+    const cd = Number.isFinite(override) ? Math.max(0, Math.min(10, override)) : cdDefault;
+
+    if (cdEnabled && cd > 0) {
+      const k = groupKey(gid, authedUser);
+      const nextAllowed = groupRate.get(k) || 0;
+      if (now() < nextAllowed) {
+        const left = ((nextAllowed - now()) / 1000).toFixed(1);
+        return socket.emit("sendError", { reason: `Group cooldown active (${left}s left).` });
+      }
+      groupRate.set(k, now() + cd * 1000);
+    }
+
+    const msg = { user: authedUser, text: t, ts: now() };
+    g.messages ||= [];
+    g.messages.push(msg);
+    if (g.messages.length > 420) g.messages.shift();
+
+    persistGroups();
+
+    const xpInfo = awardXP(authedUser, 5);
+    if (xpInfo) emitToUser(authedUser, "me:stats", xpInfo);
+
+    users[authedUser].lastSeen = now();
+    persistUsers();
+
+    for (const m of g.members) emitToUser(m, "group:message", { groupId: gid, msg });
+
+    // mentions -> inbox
+    for (const m of mentions) {
+      if (!users[m] || m === authedUser || !users[m].passHash || isGuestName(m)) continue;
+      const rec = users[m];
+      if ((rec.social?.blocked || []).includes(authedUser)) continue;
+
+      addInboxItem(m, {
+        id: nanoid(),
+        type: "mention",
+        from: authedUser,
+        text: `Mentioned you in “${g.name}”: ${t.slice(0, 160)}`,
+        ts: now(),
+        meta: { scope: "group", groupId: gid, name: g.name }
       });
+      emitToUser(m, "inbox:badge", countInbox(rec));
+      emitToUser(m, "inbox:data", { items: rec.inbox });
     }
+  });
+
+  // -------------------- group management (owner tools) --------------------
+  function requireOwner(g) {
+    return g && g.owner === authedUser;
   }
 
-  /* -------------------------- welcome popup ---------------------------- */
-  function showWelcomePopup() {
-    // Big popup for first-time accounts: beta disclaimer
-    const host = document.createElement("div");
-    host.className = "modalHost";
-    host.innerHTML = `
-      <div class="modalBackdrop"></div>
-      <div class="modalCard">
-        <div class="modalTitle">Welcome to tonkotsu.online (Beta)</div>
-        <div class="modalBody">
-          <p>
-            This is a beta version. Accounts and data are not guaranteed to persist across major updates.
-          </p>
-          <p>
-            If you run into any problems, contact <strong>fishy_x1</strong> on Discord or <strong>fishyramen</strong> on GitHub.
-          </p>
-        </div>
-        <div class="modalActions">
-          <button class="btnPrimary" id="welcomeOkBtn">Got it</button>
-        </div>
-      </div>
-    `;
-    document.body.appendChild(host);
+  socket.on("group:settings", ({ groupId, cooldownSec, enabled }) => {
+    if (!requireNonGuest()) return;
+    const gid = String(groupId || "");
+    const g = groups[gid];
+    if (!g) return;
+    ensureGroupDefaults(g);
+    if (!requireOwner(g)) return;
 
-    const style = document.createElement("style");
-    style.textContent = `
-      .modalHost{ position:fixed; inset:0; z-index:99999; display:flex; align-items:center; justify-content:center; }
-      .modalBackdrop{ position:absolute; inset:0; background:rgba(0,0,0,.65); backdrop-filter: blur(10px); }
-      .modalCard{
-        position:relative; width:min(680px, 92vw);
-        background: rgba(20,20,24,.92);
-        border: 1px solid rgba(255,255,255,.12);
-        box-shadow: 0 20px 60px rgba(0,0,0,.55);
-        border-radius: 18px;
-        padding: 18px 18px 16px;
-      }
-      .modalTitle{ font-size: 20px; font-weight: 800; letter-spacing: .2px; margin-bottom: 10px; }
-      .modalBody{ font-size: 15px; line-height: 1.45; opacity:.95; }
-      .modalBody p{ margin: 0 0 10px 0; }
-      .modalActions{ display:flex; justify-content:flex-end; gap:10px; margin-top: 10px; }
-      .btnPrimary{
-        padding: 10px 14px; border-radius: 14px; border: 1px solid rgba(255,255,255,.18);
-        background: rgba(255,255,255,.12); color: #fff;
-      }
-      .btnPrimary:hover{ background: rgba(255,255,255,.18); }
-    `;
-    document.head.appendChild(style);
+    if (typeof enabled === "boolean") g.cooldownEnabled = enabled;
 
-    host.querySelector("#welcomeOkBtn")?.addEventListener("click", () => {
-      host.remove();
-      style.remove();
+    const v = Number(cooldownSec);
+    if (Number.isFinite(v)) g.cooldownSec = Math.max(0, Math.min(10, v));
+
+    persistGroups();
+    const meta = groupPublic(g);
+    for (const m of g.members) emitToUser(m, "group:meta", { groupId: gid, meta });
+  });
+
+  socket.on("group:memberCooldown", ({ groupId, user, seconds }) => {
+    if (!requireNonGuest()) return;
+    const gid = String(groupId || "");
+    const target = String(user || "").trim();
+    const g = groups[gid];
+    if (!g) return;
+    ensureGroupDefaults(g);
+    if (!requireOwner(g)) return;
+    if (!g.members.includes(target)) return;
+
+    g.memberCooldown ||= {};
+    if (seconds === null) {
+      delete g.memberCooldown[target];
+    } else {
+      const v = Number(seconds);
+      if (!Number.isFinite(v)) return;
+      g.memberCooldown[target] = Math.max(0, Math.min(10, v));
+    }
+
+    persistGroups();
+    const meta = groupPublic(g);
+    for (const m of g.members) emitToUser(m, "group:meta", { groupId: gid, meta });
+  });
+
+  socket.on("group:muteAll", ({ groupId, on }) => {
+    if (!requireNonGuest()) return;
+    const gid = String(groupId || "");
+    const g = groups[gid];
+    if (!g) return;
+    ensureGroupDefaults(g);
+    if (!requireOwner(g)) return;
+
+    g.mutedAll = !!on;
+    if (!g.mutedAll) g.unmutedWhileMutedAll = []; // reset allowlist when turning off
+    persistGroups();
+
+    const meta = groupPublic(g);
+    for (const m of g.members) emitToUser(m, "group:meta", { groupId: gid, meta });
+  });
+
+  socket.on("group:muteUser", ({ groupId, user, on }) => {
+    if (!requireNonGuest()) return;
+    const gid = String(groupId || "");
+    const target = String(user || "").trim();
+    const g = groups[gid];
+    if (!g) return;
+    ensureGroupDefaults(g);
+    if (!requireOwner(g)) return;
+    if (!g.members.includes(target)) return;
+    if (target === g.owner) return;
+
+    g.mutedUsers ||= [];
+    g.unmutedWhileMutedAll ||= [];
+
+    if (on) {
+      if (!g.mutedUsers.includes(target)) g.mutedUsers.push(target);
+      // remove from allowlist
+      g.unmutedWhileMutedAll = (g.unmutedWhileMutedAll || []).filter(x => x !== target);
+    } else {
+      g.mutedUsers = (g.mutedUsers || []).filter(x => x !== target);
+      // If mutedAll is ON, unmuting can add to allowlist
+      if (g.mutedAll && !g.unmutedWhileMutedAll.includes(target)) g.unmutedWhileMutedAll.push(target);
+    }
+
+    persistGroups();
+    const meta = groupPublic(g);
+    for (const m of g.members) emitToUser(m, "group:meta", { groupId: gid, meta });
+  });
+
+  socket.on("group:rename", ({ groupId, name }) => {
+    if (!requireNonGuest()) return;
+    const gid = String(groupId || "");
+    const g = groups[gid];
+    if (!g) return;
+    ensureGroupDefaults(g);
+    if (!requireOwner(g)) return;
+
+    const n = String(name || "").trim();
+    if (!n) return;
+    g.name = n.slice(0, 32);
+
+    persistGroups();
+    const meta = groupPublic(g);
+    for (const m of g.members) emitToUser(m, "group:meta", { groupId: gid, meta });
+  });
+
+  socket.on("group:transfer", ({ groupId, to }) => {
+    if (!requireNonGuest()) return;
+    const gid = String(groupId || "");
+    const target = String(to || "").trim();
+    const g = groups[gid];
+    if (!g) return;
+    ensureGroupDefaults(g);
+    if (!requireOwner(g)) return;
+    if (!g.members.includes(target)) return;
+
+    g.owner = target;
+
+    persistGroups();
+    const meta = groupPublic(g);
+    for (const m of g.members) emitToUser(m, "group:meta", { groupId: gid, meta });
+  });
+
+  socket.on("group:permInvite", ({ groupId, user, on }) => {
+    if (!requireNonGuest()) return;
+    const gid = String(groupId || "");
+    const target = String(user || "").trim();
+    const g = groups[gid];
+    if (!g) return;
+    ensureGroupDefaults(g);
+    if (!requireOwner(g)) return;
+    if (!g.members.includes(target)) return;
+
+    g.perms ||= { invite: [] };
+    g.perms.invite ||= [];
+    if (!!on) {
+      if (!g.perms.invite.includes(target) && target !== g.owner) g.perms.invite.push(target);
+    } else {
+      g.perms.invite = (g.perms.invite || []).filter(x => x !== target);
+    }
+
+    persistGroups();
+    const meta = groupPublic(g);
+    for (const m of g.members) emitToUser(m, "group:meta", { groupId: gid, meta });
+  });
+
+  // Invite member (owner OR someone with invite permission). Must be friend with inviter.
+  socket.on("group:invite", ({ groupId, user }) => {
+    if (!requireNonGuest()) return;
+    const gid = String(groupId || "");
+    const target = String(user || "").trim();
+    const g = groups[gid];
+    if (!g) return;
+    ensureGroupDefaults(g);
+
+    const isOwner = g.owner === authedUser;
+    const canInvite = isOwner || (g.perms?.invite || []).includes(authedUser);
+    if (!canInvite) return socket.emit("sendError", { reason: "No permission to invite." });
+
+    if (!isValidUser(target) || !users[target] || !users[target].passHash || isGuestName(target)) return socket.emit("sendError", { reason: "User not found." });
+    if (g.members.includes(target)) return socket.emit("sendError", { reason: "User already in group." });
+    if ((g.members || []).length >= 200) return socket.emit("sendError", { reason: "Group is full (200 cap)." });
+
+    // inviter must be friends with target
+    const inviter = users[authedUser];
+    const myFriends = new Set(inviter.social?.friends || []);
+    if (!myFriends.has(target)) return socket.emit("sendError", { reason: "You can only invite friends." });
+
+    const tRec = users[target];
+    if (tRec.settings?.allowGroupInvites === false) return socket.emit("sendError", { reason: "User has group invites disabled." });
+
+    const invId = `inv_${nanoid(12)}`;
+    g.invites.push({ id: invId, to: target, from: authedUser, ts: now() });
+
+    addInboxItem(target, {
+      id: invId,
+      type: "group",
+      from: authedUser,
+      text: `Invited you to “${g.name}”`,
+      ts: now(),
+      meta: { groupId: gid, name: g.name }
     });
-    host.querySelector(".modalBackdrop")?.addEventListener("click", () => {
-      host.remove();
-      style.remove();
-    });
-  }
 
-  /* ------------------------------ login UI ----------------------------- */
-  function wireLogin() {
-    if (el.loginBtn) {
-      el.loginBtn.addEventListener("click", () => doLogin(false));
-    }
-    if (el.guestBtn) {
-      el.guestBtn.addEventListener("click", () => doLogin(true));
-    }
+    persistGroups();
+    emitToUser(target, "inbox:badge", countInbox(tRec));
+    emitToUser(target, "inbox:data", { items: tRec.inbox });
+  });
 
-    // Enter to submit
-    const u = el.usernameInput;
-    const p = el.passwordInput;
-    const keyHandler = (e) => {
-      if (e.key === "Enter") doLogin(false);
-    };
-    u?.addEventListener("keydown", keyHandler);
-    p?.addEventListener("keydown", keyHandler);
-  }
+  // Remove member (owner)
+  socket.on("group:removeMember", ({ groupId, user }) => {
+    if (!requireNonGuest()) return;
+    const gid = String(groupId || "");
+    const target = String(user || "").trim();
+    const g = groups[gid];
+    if (!g) return;
+    ensureGroupDefaults(g);
+    if (!requireOwner(g)) return;
+    if (!g.members.includes(target)) return;
+    if (target === g.owner) return;
 
-  function doLogin(asGuest) {
-    if (!state.socket || !state.socket.connected) {
-      toast("Not connected.", "error");
+    g.members = (g.members || []).filter(x => x !== target);
+    g.mutedUsers = (g.mutedUsers || []).filter(x => x !== target);
+    g.unmutedWhileMutedAll = (g.unmutedWhileMutedAll || []).filter(x => x !== target);
+    g.perms.invite = (g.perms.invite || []).filter(x => x !== target);
+    if (g.memberCooldown) delete g.memberCooldown[target];
+
+    persistGroups();
+
+    // notify removed user
+    emitToUser(target, "group:left", { groupId: gid });
+
+    const meta = groupPublic(g);
+    for (const m of g.members) emitToUser(m, "group:meta", { groupId: gid, meta });
+    socket.emit("groups:list", Object.values(groups).map(ensureGroupDefaults).filter(x => x.members.includes(authedUser)).map(groupPublic));
+  });
+
+  // Leave / delete
+  socket.on("group:leave", ({ groupId }) => {
+    if (!requireNonGuest()) return;
+    const gid = String(groupId || "");
+    const g = groups[gid];
+    if (!g) return;
+    ensureGroupDefaults(g);
+    if (!g.members.includes(authedUser)) return;
+
+    if (g.owner === authedUser) {
+      const members = [...g.members];
+      delete groups[gid];
+      persistGroups();
+      for (const m of members) {
+        emitToUser(m, "group:deleted", { groupId: gid });
+        emitToUser(m, "groups:list", Object.values(groups).map(ensureGroupDefaults).filter(x => x.members.includes(m)).map(groupPublic));
+      }
       return;
     }
 
-    if (el.loginError) el.loginError.textContent = "";
+    g.members = g.members.filter(x => x !== authedUser);
+    g.perms.invite = (g.perms.invite || []).filter(x => x !== authedUser);
+    if (g.memberCooldown) delete g.memberCooldown[authedUser];
 
-    const username = safeText(el.usernameInput?.value || "", 40);
-    const password = safeText(el.passwordInput?.value || "", 60);
+    persistGroups();
 
-    // If guest, ignore inputs
-    if (asGuest) {
-      Loading.show("Creating guest…", "Entering the app");
-      state.socket.emit("login", { guest: true });
-      return;
+    const meta = groupPublic(g);
+    for (const m of g.members) emitToUser(m, "group:meta", { groupId: gid, meta });
+
+    socket.emit("group:left", { groupId: gid });
+    socket.emit("groups:list", Object.values(groups).map(ensureGroupDefaults).filter(x => x.members.includes(authedUser)).map(groupPublic));
+  });
+
+  socket.on("group:delete", ({ groupId }) => {
+    if (!requireNonGuest()) return;
+    const gid = String(groupId || "");
+    const g = groups[gid];
+    if (!g) return;
+    ensureGroupDefaults(g);
+    if (!requireOwner(g)) return;
+
+    const members = [...g.members];
+    delete groups[gid];
+    persistGroups();
+
+    for (const m of members) {
+      emitToUser(m, "group:deleted", { groupId: gid });
+      emitToUser(m, "groups:list", Object.values(groups).map(ensureGroupDefaults).filter(x => x.members.includes(m)).map(groupPublic));
     }
+  });
 
-    if (!username || username.length < 4) {
-      toast("Username must be 4–20 characters (letters/numbers).", "error");
-      return;
-    }
-    if (!password || password.length < 4) {
-      toast("Password must be 4–32 characters (letters/numbers).", "error");
-      return;
-    }
+  // -------------------- inbox mention clear (keep, but your client can hide the button) --------------------
+  socket.on("inbox:clearMentions", () => {
+    if (!requireNonGuest()) return;
+    const u = users[authedUser];
+    u.inbox = (u.inbox || []).filter(it => it.type !== "mention");
+    persistUsers();
+    socket.emit("inbox:badge", countInbox(u));
+    socket.emit("inbox:data", { items: u.inbox });
+  });
 
-    Loading.show("Logging in…", "Verifying credentials");
-    state.socket.emit("login", { username, password, guest: false });
-  }
+  // -------------------- generic sendError hook --------------------
+  socket.on("sendErrorAck", () => {});
+});
 
-  /* ------------------------------ init -------------------------------- */
-  function boot() {
-    // Safety: never show loading overlay at boot unless we’re truly resuming
-    hide(el.appView);
-    show(el.loginView);
-
-    // Cursor default (pre-login) uses local preference if any
-    Cursor.set(true);
-
-    // Wire UI actions
-    wireLogin();
-    wireGlobalSend();
-
-    // Connect socket
-    const sock = connectSocket();
-    if (!sock) return;
-
-    // If session exists, show gentle loader (but with watchdog)
-    const sess = loadSession();
-    if (sess?.token) Loading.show("Resuming…", "Restoring your session");
-  }
-
-  // Start when DOM is ready
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", boot);
-  } else {
-    boot();
-  }
-
-  /* ---------------------------------------------------------------------
-     SERVER-SIDE REQUIREMENTS (must be in server.js; not in this file):
-
-     1) Log IP/UA on open:
-        socket.on("client:hello", (payload) => {
-          // Use socket.handshake.headers / x-forwarded-for for IP.
-          // Store: ts, ip, ua, pageId, reason, path, etc.
-          // This is purely for bot identification.
-
-     2) Rich Discord embeds for global chat:
-        In sendGlobal handler (server.js), instead of plain content, send:
-        discordSendEmbed({
-          title: "Global Chat",
-          description: msg.text,
-          fields: [
-            { name:"User", value:`\`${msg.user}\``, inline:true },
-            { name:"Time", value:`<t:${Math.floor(msg.ts/1000)}:F>`, inline:true },
-            { name:"Page", value:`\`${client.pageId || "n/a"}\``, inline:false }
-          ],
-          footer: "tonkotsu.online"
-        });
-
-     This script already sends { text, clientTs, pageId }.
-  --------------------------------------------------------------------- */
-})();
+// -------------------- boot --------------------
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => console.log(`Server listening on http://localhost:${PORT}`));
