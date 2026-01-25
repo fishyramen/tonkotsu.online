@@ -1913,7 +1913,7 @@ io.on("connection", (socket) => {
 
 /* --------------------------------- Boot ----------------------------------- */
 
-server.listen(PORT, () => {
-  console.log(`Server listening on :${PORT}`);
-  console.log(`Webhook: ${WEBHOOK_ENABLED ? "enabled" : "disabled"}`);
+const PORT = Number(process.env.PORT || 3000);
+server.listen(PORT, "0.0.0.0", () => {
+  console.log("Listening on", PORT);
 });
