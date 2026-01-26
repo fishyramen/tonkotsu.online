@@ -658,3 +658,577 @@
     // retry on transient failures
     const attempt = async (n) => {
       try{
+        const scope =
+          kind === "global" ? "global" :
+          kind === "dm" ? "dm" :
+          kind === "group" ? "group" : "global";
+
+        const targetId =
+          kind === "dm" ? id :
+          kind === "group" ? id : null;
+
+        const resp = await api("/api/messages/send", {
+          method: "POST",
+          body: { scope, targetId, text, clientId }
+        });
+
+        // server can return cooldown info
+        if (resp?.cooldownUntil) {
+          setCooldown(resp.cooldownUntil, resp.cooldownMs || 0);
+        }
+
+        if (resp?.ok && resp.message) {
+          // replace local optimistic message
+          const msgs = t.messages;
+          const idx = msgs.findIndex(x => x.id === localId);
+          if (idx >= 0) msgs[idx] = resp.message;
+          renderMessages(state.ui.activeThread);
+          state.ui.sendingLock = false;
+          return true;
+        }
+
+        throw new Error(resp?.error || "Send failed");
+      }catch(e){
+        const status = e?.status || 0;
+        const transient = status === 0 || status === 502 || status === 503 || status === 504;
+        if (transient && n < 2){
+          await sleep(250 * (n + 1));
+          return attempt(n + 1);
+        }
+
+        // mark message failed
+        const msgs = t.messages;
+        const idx = msgs.findIndex(x => x.id === localId);
+        if (idx >= 0){
+          msgs[idx].pending = false;
+          msgs[idx].failed = true;
+          msgs[idx].error = e.message || "Send failed";
+        }
+        renderMessages(state.ui.activeThread);
+        toast.show("Message failed to send.", "err", 1800);
+        state.ui.sendingLock = false;
+        return false;
+      }
+    };
+
+    await attempt(0);
+  }
+
+  dom.btnSend.addEventListener("click", () => sendMessage());
+  dom.msgInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      sendMessage();
+    }
+  });
+
+  // Edit/Delete/Report actions
+  async function editMessage(threadKey, messageId, newText){
+    const info = threadKey === "global"
+      ? { scope:"global", targetId:null }
+      : threadKey.startsWith("dm:")
+        ? { scope:"dm", targetId: threadKey.slice(3) }
+        : threadKey.startsWith("group:")
+          ? { scope:"group", targetId: threadKey.slice(6) }
+          : { scope:"global", targetId:null };
+
+    const resp = await api("/api/messages/edit", {
+      method:"POST",
+      body:{ messageId, text: newText, scope: info.scope, targetId: info.targetId }
+    });
+
+    if (resp?.ok && resp.message){
+      const t = state.data.threads[threadKey];
+      if (t){
+        const idx = t.messages.findIndex(x => x.id === resp.message.id);
+        if (idx >= 0) t.messages[idx] = resp.message;
+        renderMessages(threadKey);
+        toast.show("Edited.", "ok", 1200);
+      }
+      return;
+    }
+    throw new Error(resp?.error || "Edit failed");
+  }
+
+  async function deleteMessage(threadKey, messageId){
+    const info = threadKey === "global"
+      ? { scope:"global", targetId:null }
+      : threadKey.startsWith("dm:")
+        ? { scope:"dm", targetId: threadKey.slice(3) }
+        : threadKey.startsWith("group:")
+          ? { scope:"group", targetId: threadKey.slice(6) }
+          : { scope:"global", targetId:null };
+
+    const resp = await api("/api/messages/delete", {
+      method:"POST",
+      body:{ messageId, scope: info.scope, targetId: info.targetId }
+    });
+
+    if (resp?.ok){
+      const t = state.data.threads[threadKey];
+      if (t){
+        const idx = t.messages.findIndex(x => x.id === messageId);
+        if (idx >= 0) t.messages.splice(idx, 1);
+        renderMessages(threadKey);
+        toast.show("Deleted.", "ok", 1200);
+      }
+      return;
+    }
+    throw new Error(resp?.error || "Delete failed");
+  }
+
+  async function reportMessage(threadKey, messageId, reason){
+    const info = threadKey === "global"
+      ? { scope:"global", targetId:null }
+      : threadKey.startsWith("dm:")
+        ? { scope:"dm", targetId: threadKey.slice(3) }
+        : threadKey.startsWith("group:")
+          ? { scope:"group", targetId: threadKey.slice(6) }
+          : { scope:"global", targetId:null };
+
+    const resp = await api("/api/messages/report", {
+      method:"POST",
+      body:{ messageId, reason: reason || "", scope: info.scope, targetId: info.targetId }
+    });
+
+    if (resp?.ok){
+      toast.show("Reported to moderation.", "ok", 1400);
+      return;
+    }
+    throw new Error(resp?.error || "Report failed");
+  }
+
+  // Online users right panel (small + not repeated)
+  function renderOnlineUsers(){
+    if (!dom.rightBody) return;
+
+    const users = Array.isArray(state.ui.onlineUsers) ? state.ui.onlineUsers : [];
+    const rows = users.slice(0, 50).map(u => {
+      const mode = u.mode || "online";
+      const cls = mode === "idle" ? "idle" : mode === "dnd" ? "dnd" : mode === "invisible" ? "inv" : "on";
+      return `
+        <div class="ou">
+          <span class="pDot ${cls}"></span>
+          <span class="ouName">${esc(u.username || "user")}</span>
+        </div>
+      `;
+    }).join("");
+
+    dom.rightBody.innerHTML = `
+      <div class="onlineHead">
+        <div class="onlineTitle">Online users</div>
+        <div class="onlineCount">${users.length}</div>
+      </div>
+      <div class="onlineList">
+        ${rows || `<div class="small" style="color:rgba(154,163,183,.85)">No users online.</div>`}
+      </div>
+    `;
+  }
+
+  // Presence buttons (optional)
+  function bindPresenceButtons(){
+    const set = (m)=>setPresence(m);
+    dom.btnPresenceOnline?.addEventListener("click", ()=>set("online"));
+    dom.btnPresenceIdle?.addEventListener("click", ()=>set("idle"));
+    dom.btnPresenceDnd?.addEventListener("click", ()=>set("dnd"));
+    dom.btnPresenceInv?.addEventListener("click", ()=>set("invisible"));
+  }
+  bindPresenceButtons();
+
+  // Settings modal (basic; restores “nothing works” complaint)
+  function openSettings(){
+    const cur = state.ui.settings.cursor;
+    const snd = state.ui.settings.sound;
+
+    openModal(
+      "Settings",
+      `
+        <div class="setRow">
+          <div class="setLeft">
+            <div class="setT">Custom cursor</div>
+            <div class="setD">Hide native cursor, show circle + trail.</div>
+          </div>
+          <label class="switch">
+            <input id="setCursorOn" type="checkbox" ${cur.enabled ? "checked" : ""}>
+            <span class="slider"></span>
+          </label>
+        </div>
+
+        <div class="setRow">
+          <div class="setLeft">
+            <div class="setT">Cursor size</div>
+            <div class="setD">Bigger feels better on dark UI.</div>
+          </div>
+          <input id="setCursorSize" class="range" type="range" min="0.9" max="2" step="0.05" value="${cur.size}">
+        </div>
+
+        <div class="setRow">
+          <div class="setLeft">
+            <div class="setT">Dynamic cursor</div>
+            <div class="setD">React to hover/click and idle pulse.</div>
+          </div>
+          <label class="switch">
+            <input id="setCursorDyn" type="checkbox" ${cur.dynamic ? "checked" : ""}>
+            <span class="slider"></span>
+          </label>
+        </div>
+
+        <div class="setRow">
+          <div class="setLeft">
+            <div class="setT">Sound</div>
+            <div class="setD">Toasts only if sound is off.</div>
+          </div>
+          <label class="switch">
+            <input id="setSoundOn" type="checkbox" ${snd.enabled ? "checked" : ""}>
+            <span class="slider"></span>
+          </label>
+        </div>
+
+        <div class="setRow">
+          <div class="setLeft">
+            <div class="setT">Sound volume</div>
+            <div class="setD">Only applies if sound is enabled.</div>
+          </div>
+          <input id="setSoundVol" class="range" type="range" min="0" max="1" step="0.05" value="${snd.volume}">
+        </div>
+      `,
+      [
+        { label:"Close", onClick: closeModal },
+        {
+          label:"Save",
+          kind:"primary",
+          onClick: ()=>{
+            const on = $("#setCursorOn")?.checked;
+            const size = Number($("#setCursorSize")?.value || 1.35);
+            const dyn = $("#setCursorDyn")?.checked;
+
+            const sndOn = $("#setSoundOn")?.checked;
+            const sndVol = Number($("#setSoundVol")?.value || 0.35);
+
+            state.ui.settings.cursor.enabled = !!on;
+            state.ui.settings.cursor.size = size;
+            state.ui.settings.cursor.dynamic = !!dyn;
+            state.ui.settings.sound.enabled = !!sndOn;
+            state.ui.settings.sound.volume = Math.max(0, Math.min(1, sndVol));
+
+            saveSettings();
+            applyCursorMode();
+            closeModal();
+            toast.show("Saved settings.", "ok", 1200);
+          }
+        }
+      ]
+    );
+  }
+
+  dom.btnSettings?.addEventListener("click", openSettings);
+
+  // Friend add / Group create (hooks that must exist in index + server)
+  async function addFriend(username){
+    const u = safe(username).trim();
+    if (!u) return;
+    const resp = await api("/api/friends/request", { method:"POST", body:{ username: u } });
+    if (resp?.ok){
+      toast.show("Friend request sent.", "ok", 1500);
+      await bootstrap();
+      renderThreadList();
+      return;
+    }
+    throw new Error(resp?.error || "Friend request failed");
+  }
+
+  async function createGroup(name){
+    const n = safe(name).trim();
+    if (!n) return;
+    const resp = await api("/api/groups/create", { method:"POST", body:{ name: n, limit: 25, cooldownSeconds: 2 } });
+    if (resp?.ok && resp.group?.id){
+      toast.show("Group created.", "ok", 1500);
+      await bootstrap();
+      // auto-open it
+      const key = `group:${resp.group.id}`;
+      state.ui.activeThread = key;
+      renderThreadList();
+      await refreshActiveThread();
+      return;
+    }
+    throw new Error(resp?.error || "Group create failed");
+  }
+
+  dom.btnAddFriend?.addEventListener("click", ()=>{
+    openModal(
+      "Add friend",
+      `<input id="friendUser" class="input" placeholder="username" />`,
+      [
+        { label:"Cancel", onClick: closeModal },
+        { label:"Request", kind:"primary", onClick: async ()=>{
+          const u = $("#friendUser")?.value || "";
+          try { await addFriend(u); closeModal(); } catch(e){ toast.show(e.message || "Failed", "err"); }
+        }}
+      ]
+    );
+  });
+
+  dom.btnNewGroup?.addEventListener("click", ()=>{
+    openModal(
+      "Create group chat",
+      `<input id="groupName" class="input" placeholder="Group name" />`,
+      [
+        { label:"Cancel", onClick: closeModal },
+        { label:"Create", kind:"primary", onClick: async ()=>{
+          const g = $("#groupName")?.value || "";
+          try { await createGroup(g); closeModal(); } catch(e){ toast.show(e.message || "Failed", "err"); }
+        }}
+      ]
+    );
+  });
+
+  // Refresh active thread (no “jump” / “refresh” buttons in UI required)
+  async function refreshActiveThread(){
+    const key = state.ui.activeThread;
+    const t = state.data.threads[key];
+    if (!t) return;
+
+    showLoading("Syncing…", "thread");
+
+    try{
+      if (key === "global"){
+        const r = await api(`/api/messages/global?limit=80`, { method:"GET" });
+        if (r?.ok){
+          t.messages = Array.isArray(r.messages) ? r.messages : [];
+          t.cursor = r.cursor ?? null;
+          t.hasMore = r.hasMore ?? true;
+        }
+      } else if (key.startsWith("dm:")){
+        const peerId = key.slice(3);
+        const r = await api(`/api/messages/dm/${encodeURIComponent(peerId)}?limit=80`, { method:"GET" });
+        if (r?.ok){
+          t.messages = Array.isArray(r.messages) ? r.messages : [];
+          t.cursor = r.cursor ?? null;
+          t.hasMore = r.hasMore ?? true;
+          if (r.peer) t.name = r.peer.username || t.name;
+        }
+      } else if (key.startsWith("group:")){
+        const gid = key.slice(6);
+        const r = await api(`/api/messages/group/${encodeURIComponent(gid)}?limit=90`, { method:"GET" });
+        if (r?.ok){
+          t.messages = Array.isArray(r.messages) ? r.messages : [];
+          t.cursor = r.cursor ?? null;
+          t.hasMore = r.hasMore ?? true;
+          if (r.group) t.name = r.group.name || t.name;
+        }
+      }
+
+      renderMessages(key);
+      renderThreadList();
+    }catch(e){
+      toast.show(e.message || "Failed to refresh thread.", "err", 2000);
+    } finally {
+      hideLoading();
+    }
+  }
+
+  // Bootstrap state into thread sidebar
+  async function bootstrap(){
+    showLoading("Loading…", "state");
+    const data = await api("/api/state/bootstrap", { method:"GET" });
+
+    // hard enforce black background if CSS didn’t apply (fix blue bg)
+    document.documentElement.style.background = "#05060a";
+    document.body.style.background = "#05060a";
+
+    // ensure global exists
+    const global = ensureThread("global", { kind:"global", id:null, name:"Global" });
+    global.messages = Array.isArray(data.global?.messages) ? data.global.messages : global.messages;
+
+    // friends + dm threads
+    state.data.friends = Array.isArray(data.friends) ? data.friends : [];
+    for (const f of state.data.friends){
+      if (!f?.id) continue;
+      const key = `dm:${f.id}`;
+      const th = ensureThread(key, { kind:"dm", id:f.id, name: f.username || "User" });
+      // server may include threads in bootstrap; accept if present
+      if (Array.isArray(f.messages)) th.messages = f.messages;
+    }
+
+    // group list + group threads
+    state.data.groups = Array.isArray(data.groups) ? data.groups : [];
+    for (const g of state.data.groups){
+      if (!g?.id) continue;
+      const key = `group:${g.id}`;
+      const th = ensureThread(key, { kind:"group", id:g.id, name: g.name || "Group" });
+      if (Array.isArray(g.messages)) th.messages = g.messages;
+    }
+
+    // keep active thread valid
+    if (!state.data.threads[state.ui.activeThread]) {
+      state.ui.activeThread = "global";
+    }
+
+    // online
+    state.ui.onlineUsers = Array.isArray(data.onlineUsers) ? data.onlineUsers : [];
+
+    hideLoading();
+    renderTop();
+    renderThreadList();
+    renderMessages(state.ui.activeThread);
+    renderOnlineUsers();
+  }
+
+  // Socket wiring (must be supported server-side)
+  async function initSocket(){
+    if (!window.io || !state.session.token) return;
+
+    try { state.socket?.removeAllListeners?.(); state.socket?.disconnect?.(); } catch {}
+    state.socket = null;
+
+    const sock = io({ transports:["websocket","polling"], auth:{ token: state.session.token } });
+    state.socket = sock;
+
+    sock.on("connect", ()=>{
+      sock.emit("auth", { token: state.session.token });
+      sock.emit("presence:set", { mode: state.settings?.presenceMode || "online" });
+    });
+
+    // IMPORTANT: server should dedupe multiple tabs by userId, not per socket
+    sock.on("users:online", (p)=>{
+      // Expect: { users:[{id,username,mode}], count }
+      const users = Array.isArray(p?.users) ? p.users : [];
+      state.ui.onlineUsers = users;
+      renderOnlineUsers();
+    });
+
+    sock.on("presence:update", (p)=>{
+      // optional { me:{mode} }
+      if (p?.me?.mode) setPresenceUi(p.me.mode);
+    });
+
+    // Message events: dedupe by id + also ignore echoed optimistic clientId if server returns it
+    sock.on("message:new", (m)=>{
+      if (!m || !m.id) return;
+
+      const key =
+        m.scope === "global" ? "global" :
+        m.scope === "dm" ? `dm:${m.targetId || m.peerId || ""}` :
+        m.scope === "group" ? `group:${m.targetId || m.groupId || ""}` : "global";
+
+      const th = state.data.threads[key];
+      if (!th) return;
+
+      // prevent duplicates
+      if (th.messages.some(x => x.id === m.id)) return;
+
+      th.messages.push(m);
+      th.messages.sort((a,b)=>(a.ts||0)-(b.ts||0));
+
+      if (state.ui.activeThread === key) renderMessages(key);
+      renderThreadList();
+    });
+
+    sock.on("message:edit", (m)=>{
+      if (!m || !m.id) return;
+      const key =
+        m.scope === "global" ? "global" :
+        m.scope === "dm" ? `dm:${m.targetId || m.peerId || ""}` :
+        m.scope === "group" ? `group:${m.targetId || m.groupId || ""}` : null;
+      if (!key) return;
+      const th = state.data.threads[key];
+      if (!th) return;
+      const idx = th.messages.findIndex(x => x.id === m.id);
+      if (idx >= 0) th.messages[idx] = { ...th.messages[idx], ...m };
+      if (state.ui.activeThread === key) renderMessages(key);
+    });
+
+    sock.on("message:delete", (p)=>{
+      const messageId = p?.messageId;
+      if (!messageId) return;
+      const key =
+        p.scope === "global" ? "global" :
+        p.scope === "dm" ? `dm:${p.targetId || ""}` :
+        p.scope === "group" ? `group:${p.targetId || ""}` : null;
+      if (!key) return;
+      const th = state.data.threads[key];
+      if (!th) return;
+      const idx = th.messages.findIndex(x => x.id === messageId);
+      if (idx >= 0) th.messages.splice(idx, 1);
+      if (state.ui.activeThread === key) renderMessages(key);
+      renderThreadList();
+    });
+
+    sock.on("connect_error", (e)=>{
+      console.warn("socket error:", e?.message);
+    });
+  }
+
+  // Auth boot
+  async function afterAuth(){
+    showApp();
+    showLoading("Preparing…", "boot");
+    renderTop();
+    try{
+      await bootstrap();
+      await initSocket();
+      toast.show("Connected.", "ok", 1200);
+    }catch(e){
+      toast.show(e.message || "Failed to boot.", "err", 2200);
+      showLogin();
+    } finally {
+      hideLoading();
+    }
+  }
+
+  // Search threads live
+  dom.searchThreads?.addEventListener("input", ()=>renderThreadList());
+
+  // Presence badge click opens small menu (optional)
+  dom.presencePill?.addEventListener("click", ()=>{
+    openModal(
+      "Presence",
+      `<div class="small">Choose how you appear.</div>
+       <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
+        <button class="btn" id="pOn">Online</button>
+        <button class="btn" id="pIdle">Idle</button>
+        <button class="btn" id="pDnd">DND</button>
+        <button class="btn" id="pInv">Invisible</button>
+       </div>`,
+      []
+    );
+    $("#pOn")?.addEventListener("click", ()=>{ setPresence("online"); closeModal(); });
+    $("#pIdle")?.addEventListener("click", ()=>{ setPresence("idle"); closeModal(); });
+    $("#pDnd")?.addEventListener("click", ()=>{ setPresence("dnd"); closeModal(); });
+    $("#pInv")?.addEventListener("click", ()=>{ setPresence("invisible"); closeModal(); });
+  });
+
+  // Hard disable “jump/refresh” if they exist (you asked to remove them)
+  dom.btnJumpLastRead && (dom.btnJumpLastRead.style.display = "none");
+  dom.btnRefresh && (dom.btnRefresh.style.display = "none");
+
+  // App start
+  (async ()=>{
+    applyCursorMode();
+    renderTop();
+
+    if (state.session.token) {
+      // attempt restore
+      try{
+        showApp();
+        showLoading("Restoring…", "resume");
+        const me = await api("/api/users/me", { method:"GET" });
+        if (me?.ok && me.user) {
+          state.session.user = me.user;
+          localStorage.setItem("tk_user", JSON.stringify(me.user));
+          await afterAuth();
+          return;
+        }
+      } catch {}
+      // cleanup invalid token
+      state.session.token = null;
+      state.session.user = null;
+      localStorage.setItem("tk_token","null");
+      localStorage.setItem("tk_user","null");
+    }
+
+    // show login if not authenticated
+    showLogin();
+  })();
+
+})();
