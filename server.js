@@ -1,825 +1,874 @@
-// server.js (CommonJS)
-// Tonkotsu.online baseline server for script.js client
+"use strict";
+
+/**
+ * tonkotsu.online — server.js
+ * - Express + Socket.IO
+ * - JWT auth (cookie optional, header supported)
+ * - Users + friends + groups + messages persisted to /data/*.json
+ * - Idempotent send using clientId
+ * - Edit/Delete allowed within 60s (server enforced)
+ * - Reports stored + bot endpoints protected via ADMIN_SHARED_SECRET
+ * - Online users list with presence, de-duped per user (multi-tabs won't count twice)
+ */
+
 require("dotenv").config();
 
+const fs = require("fs");
 const path = require("path");
-const express = require("express");
 const http = require("http");
+
+const express = require("express");
 const helmet = require("helmet");
 const cors = require("cors");
-const rateLimit = require("express-rate-limit");
 const cookieParser = require("cookie-parser");
-const bcrypt = require("bcryptjs");
+const rateLimit = require("express-rate-limit");
+
 const jwt = require("jsonwebtoken");
+const bcrypt = require("bcryptjs");
 const { nanoid } = require("nanoid");
 const { Server } = require("socket.io");
 
+// -------------------- ENV --------------------
 const PORT = Number(process.env.PORT || 3000);
-const JWT_SECRET = process.env.JWT_SECRET || "dev_jwt_secret_change_me";
-const ADMIN_SHARED_SECRET = process.env.ADMIN_SHARED_SECRET || "dev_admin_secret_change_me";
+const JWT_SECRET = String(process.env.JWT_SECRET || "").trim();
+const ADMIN_SHARED_SECRET = String(process.env.ADMIN_SHARED_SECRET || "").trim();
 
-// -------------------------
-// In-memory data (DEV ONLY)
-// -------------------------
-const db = {
-  usersById: new Map(),       // id -> user
-  usersByUsername: new Map(), // usernameLower -> user
-  sessions: new Map(),        // token -> { userId, createdAt }
-  friends: new Map(),         // userId -> Set(friendUserId)
-  groups: new Map(),          // groupId -> group
-  groupMembers: new Map(),    // groupId -> Set(userId)
-  messages: {
-    global: [],               // {id, ts, text, user:{id,username,color}, editedAt?, kind?}
-    dm: new Map(),            // key "a|b" -> []
-    group: new Map()          // groupId -> []
-  },
-  idempotency: new Map(),     // key `${userId}:${clientId}` -> messageId
-  reports: [],                // queued reports for bot
-  bans: {
-    user: new Map(),          // usernameLower -> { until, strikes, permanent }
-    ip: new Map()             // ip -> { until, strikes, permanent }
+if (!JWT_SECRET) {
+  console.error("Missing JWT_SECRET in env.");
+  process.exit(1);
+}
+if (!ADMIN_SHARED_SECRET) {
+  console.error("Missing ADMIN_SHARED_SECRET in env.");
+  process.exit(1);
+}
+
+// -------------------- Paths --------------------
+const DATA_DIR = path.join(__dirname, "data");
+if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+
+const USERS_FILE = path.join(DATA_DIR, "users.json");
+const STATE_FILE = path.join(DATA_DIR, "state.json");
+const REPORTS_FILE = path.join(DATA_DIR, "reports.json");
+const BANS_FILE = path.join(DATA_DIR, "bans.json");
+
+// -------------------- Helpers --------------------
+const now = () => Date.now();
+
+function safeReadJson(file, fallback) {
+  try {
+    if (!fs.existsSync(file)) return fallback;
+    const raw = fs.readFileSync(file, "utf8");
+    return JSON.parse(raw);
+  } catch {
+    return fallback;
   }
+}
+
+function safeWriteJson(file, value) {
+  try {
+    fs.writeFileSync(file, JSON.stringify(value, null, 2));
+  } catch (e) {
+    console.error("Failed writing", file, e);
+  }
+}
+
+function lower(s) {
+  return String(s || "").trim().toLowerCase();
+}
+
+function randColor(seedStr) {
+  // deterministic-ish color per username
+  const s = lower(seedStr);
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+  // convert to HSL
+  const hue = h % 360;
+  return `hsl(${hue} 75% 70%)`;
+}
+
+function ipFromReq(req) {
+  // Render uses x-forwarded-for
+  const xf = req.headers["x-forwarded-for"];
+  if (xf) return String(xf).split(",")[0].trim();
+  return req.socket?.remoteAddress || "0.0.0.0";
+}
+
+// -------------------- Data model --------------------
+/**
+users: {
+  [usernameLower]: {
+     id, username, passHash, createdAt, lastSeen, bio, color,
+     strikes, bannedUntil, bannedPermanent,
+     friends: [userId], // mutual
+  }
+}
+state: {
+  global: { messages: [] },
+  dms: { [pairKey]: { messages: [] } },
+  groups: {
+     list: [{id,name,ownerId,createdAt,members:[userId],cooldownSeconds}],
+     threads: { [groupId]: { messages: [] } }
+  },
+  idempotency: { [userId]: { [clientId]: messageObj } } // prune regularly
+}
+reports: [{id, ts, messageId, scope, targetId, reporter:{id,username}, reason, snapshot }]
+bans: {
+  ip: { untilTs }
+}
+ */
+
+const db = {
+  users: safeReadJson(USERS_FILE, {}),
+  state: safeReadJson(STATE_FILE, {
+    global: { messages: [] },
+    dms: {},
+    groups: { list: [], threads: {} },
+    idempotency: {}
+  }),
+  reports: safeReadJson(REPORTS_FILE, []),
+  bans: safeReadJson(BANS_FILE, { ip: {} })
 };
 
-// Seed an owner/admin user (change after first boot)
-seedAdminUser();
+function persistAll() {
+  safeWriteJson(USERS_FILE, db.users);
+  safeWriteJson(STATE_FILE, db.state);
+  safeWriteJson(REPORTS_FILE, db.reports);
+  safeWriteJson(BANS_FILE, db.bans);
+}
 
-// -------------------------
-// Express + HTTP + Socket.IO
-// -------------------------
+setInterval(() => {
+  // prune idempotency older than 10 minutes
+  const cutoff = now() - 10 * 60 * 1000;
+  const idm = db.state.idempotency || {};
+  for (const uid of Object.keys(idm)) {
+    for (const cid of Object.keys(idm[uid] || {})) {
+      const m = idm[uid][cid];
+      if (!m || (m.ts || 0) < cutoff) delete idm[uid][cid];
+    }
+  }
+  // prune ip bans expired
+  for (const ip of Object.keys(db.bans.ip || {})) {
+    if (db.bans.ip[ip] && db.bans.ip[ip].untilTs && db.bans.ip[ip].untilTs < now()) {
+      delete db.bans.ip[ip];
+    }
+  }
+  persistAll();
+}, 20_000);
+
+// -------------------- Auth --------------------
+function signToken(user) {
+  return jwt.sign({ uid: user.id, u: user.username }, JWT_SECRET, { expiresIn: "7d" });
+}
+
+function verifyTokenMaybe(req) {
+  const hdr = req.headers.authorization || "";
+  const tok =
+    hdr.startsWith("Bearer ") ? hdr.slice(7).trim() :
+    (req.cookies && req.cookies.tk) ? req.cookies.tk :
+    null;
+
+  if (!tok) return null;
+  try {
+    const payload = jwt.verify(tok, JWT_SECRET);
+    const uid = payload?.uid;
+    if (!uid) return null;
+    // find user by id
+    const u = Object.values(db.users).find(x => x.id === uid);
+    return u || null;
+  } catch {
+    return null;
+  }
+}
+
+function requireAuth(req, res, next) {
+  // IP ban check first
+  const ip = ipFromReq(req);
+  const ban = db.bans.ip?.[ip];
+  if (ban?.untilTs && ban.untilTs > now()) {
+    return res.status(403).json({ ok: false, error: "IP blocked temporarily." });
+  }
+
+  const u = verifyTokenMaybe(req);
+  if (!u) return res.status(401).json({ ok: false, error: "Not signed in." });
+
+  // account bans
+  if (u.bannedPermanent) return res.status(403).json({ ok: false, error: "Account erased." });
+  if (u.bannedUntil && u.bannedUntil > now()) return res.status(403).json({ ok: false, error: "Account erased." });
+
+  u.lastSeen = now();
+  next();
+}
+
+function getAuthedUser(req) {
+  return verifyTokenMaybe(req);
+}
+
+function requireBotSecret(req, res, next) {
+  const s = String(req.headers["x-tonkotsu-bot-secret"] || "").trim();
+  if (!s || s !== ADMIN_SHARED_SECRET) return res.status(401).json({ ok: false, error: "Bad bot secret." });
+  next();
+}
+
+// -------------------- Express setup --------------------
 const app = express();
-const server = http.createServer(app);
-const io = new Server(server, {
-  cors: { origin: true, credentials: true },
-  transports: ["websocket", "polling"]
-});
-
-// Basic security headers
 app.use(helmet({
-  contentSecurityPolicy: false // if you serve inline scripts/styles, keep off; tighten later
+  contentSecurityPolicy: false // keep simple while you iterate
 }));
 app.use(cors({ origin: true, credentials: true }));
 app.use(express.json({ limit: "1mb" }));
 app.use(cookieParser());
 
-// Rate limit (adjust)
+app.set("trust proxy", 1);
+
 app.use(rateLimit({
   windowMs: 60_000,
-  limit: 240
+  limit: 400
 }));
 
-// Serve public/
+// Serve public
 app.use(express.static(path.join(__dirname, "public")));
 
-// -------------------------
-// Helpers
-// -------------------------
-function now() { return Date.now(); }
-function lower(s) { return String(s || "").trim().toLowerCase(); }
-function safeStr(s, max = 5000) { return String(s ?? "").slice(0, max); }
+// -------------------- Basic endpoints --------------------
+app.get("/api/health", (req, res) => res.json({ ok: true, ts: now() }));
 
-function pickColor(seed) {
-  // deterministic-ish color from username
-  const s = lower(seed);
-  let h = 0;
-  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
-  const palette = [
-    "#9aa3b7","#ff5c7a","#7cffc6","#ffd278","#8fb8ff","#d18fff","#7df0ff","#ff9c5c",
-    "#b6ff8f","#ff7df0","#c2c8ff","#9cffc2"
-  ];
-  return palette[h % palette.length];
-}
+app.get("/api/users/me", (req, res) => {
+  const u = getAuthedUser(req);
+  if (!u) return res.status(401).json({ ok: false });
+  res.json({ ok: true, user: publicUser(u) });
+});
 
-function signToken(user) {
-  return jwt.sign({ sub: user.id }, JWT_SECRET, { expiresIn: "14d" });
-}
-
-function verifyToken(token) {
-  const p = jwt.verify(token, JWT_SECRET);
-  return p?.sub || null;
-}
-
-function authMiddleware(req, res, next) {
-  const auth = req.headers.authorization || "";
-  const token = auth.startsWith("Bearer ") ? auth.slice(7) : null;
-  if (!token) return res.status(401).json({ ok: false, error: "Unauthorized" });
-  try {
-    const userId = verifyToken(token);
-    const user = db.usersById.get(userId);
-    if (!user) return res.status(401).json({ ok: false, error: "Unauthorized" });
-
-    // ban checks (user + ip)
-    const ip = getIp(req);
-    const banU = db.bans.user.get(lower(user.username));
-    if (banU && banU.permanent) return res.status(403).json({ ok: false, error: "This account has been erased." });
-    if (banU && banU.until && now() < banU.until) return res.status(403).json({ ok: false, error: "This account is temporarily disabled." });
-
-    const banIp = db.bans.ip.get(ip);
-    if (banIp && banIp.permanent) return res.status(403).json({ ok: false, error: "Access blocked." });
-    if (banIp && banIp.until && now() < banIp.until) return res.status(403).json({ ok: false, error: "Access temporarily blocked." });
-
-    req.user = user;
-    req.token = token;
-    next();
-  } catch (e) {
-    return res.status(401).json({ ok: false, error: "Unauthorized" });
-  }
-}
-
-function getIp(req) {
-  const xff = req.headers["x-forwarded-for"];
-  if (typeof xff === "string" && xff.length) return xff.split(",")[0].trim();
-  return req.socket.remoteAddress || "unknown";
-}
-
-function userPublic(u) {
+// -------------------- User helpers --------------------
+function publicUser(u) {
   return {
     id: u.id,
     username: u.username,
-    color: u.color,
-    badges: u.badges || [],
-    createdAt: u.createdAt || null,
+    createdAt: u.createdAt,
     lastSeen: u.lastSeen || null,
-    bio: u.bio || ""
+    bio: u.bio || "",
+    color: u.color || randColor(u.username),
+    badges: u.badges || []
   };
 }
 
-function dmKey(a, b) {
-  const A = String(a), B = String(b);
-  return A < B ? `${A}|${B}` : `${B}|${A}`;
+function ensureUser(username) {
+  const key = lower(username);
+  return db.users[key] || null;
 }
 
-function pushMessage(list, msg, limit = 500) {
-  list.push(msg);
-  if (list.length > limit) list.splice(0, list.length - limit);
+function createUser(username, password) {
+  const key = lower(username);
+  if (db.users[key]) return null;
+  const id = nanoid(12);
+  const passHash = bcrypt.hashSync(String(password), 10);
+  const u = {
+    id,
+    username: String(username).trim(),
+    passHash,
+    createdAt: now(),
+    lastSeen: now(),
+    bio: "",
+    color: randColor(username),
+    strikes: 0,
+    bannedUntil: 0,
+    bannedPermanent: false,
+    friends: [],
+    badges: ["beta"]
+  };
+  db.users[key] = u;
+  persistAll();
+  return u;
 }
 
-function canEditOrDelete(message, user) {
-  const mine = message?.user?.id && user?.id && message.user.id === user.id;
-  const age = now() - (message.ts || 0);
-  return mine && age <= 60_000;
+function upsertDmPair(aId, bId) {
+  const s = [String(aId), String(bId)].sort();
+  const key = `${s[0]}_${s[1]}`;
+  if (!db.state.dms[key]) db.state.dms[key] = { messages: [] };
+  return { key, thread: db.state.dms[key] };
 }
 
-// -------------------------
-// Auth endpoints
-// -------------------------
+function getGroup(groupId) {
+  return db.state.groups.list.find(g => g.id === groupId) || null;
+}
+
+// -------------------- Auth endpoints --------------------
 app.post("/api/auth/login", (req, res) => {
-  const username = safeStr(req.body?.username, 64);
-  const password = safeStr(req.body?.password, 256);
-  const u = db.usersByUsername.get(lower(username));
-  if (!u) return res.status(400).json({ ok: false, error: "Invalid credentials" });
+  const ip = ipFromReq(req);
+  const ban = db.bans.ip?.[ip];
+  if (ban?.untilTs && ban.untilTs > now()) {
+    return res.status(403).json({ ok: false, error: "IP blocked temporarily." });
+  }
 
-  // ban checks
-  const banU = db.bans.user.get(lower(u.username));
-  if (banU?.permanent) return res.status(403).json({ ok: false, error: "This account has been erased." });
-  if (banU?.until && now() < banU.until) return res.status(403).json({ ok: false, error: "This account is temporarily disabled." });
+  const username = String(req.body?.username || "").trim();
+  const password = String(req.body?.password || "").trim();
+  if (!username || !password) return res.status(400).json({ ok: false, error: "Missing username/password." });
+
+  let u = ensureUser(username);
+
+  // if user doesn't exist, create it (simple for now)
+  if (!u) u = createUser(username, password);
+  if (!u) return res.status(400).json({ ok: false, error: "Unable to create user." });
+
+  if (u.bannedPermanent) return res.status(403).json({ ok: false, error: "Account erased." });
+  if (u.bannedUntil && u.bannedUntil > now()) return res.status(403).json({ ok: false, error: "Account erased." });
 
   const ok = bcrypt.compareSync(password, u.passHash);
-  if (!ok) return res.status(400).json({ ok: false, error: "Invalid credentials" });
+  if (!ok) return res.status(401).json({ ok: false, error: "Wrong password." });
 
+  u.lastSeen = now();
   const token = signToken(u);
-  db.sessions.set(token, { userId: u.id, createdAt: now() });
-  return res.json({ ok: true, token, user: userPublic(u) });
+
+  // set cookie too (optional)
+  res.cookie("tk", token, { httpOnly: true, sameSite: "lax", secure: false });
+
+  persistAll();
+  res.json({ ok: true, token, user: publicUser(u) });
 });
 
 app.post("/api/auth/guest", (req, res) => {
-  // guest accounts: create ephemeral user
-  const id = nanoid(10);
-  const username = `guest${Math.floor(Math.random() * 9000 + 1000)}`;
-  const u = {
-    id,
-    username,
-    color: pickColor(username),
-    badges: ["Guest"],
-    createdAt: now(),
-    lastSeen: now(),
-    bio: ""
-  };
-  db.usersById.set(id, u);
-  db.usersByUsername.set(lower(username), u);
-  db.friends.set(id, new Set());
+  const ip = ipFromReq(req);
+  const ban = db.bans.ip?.[ip];
+  if (ban?.untilTs && ban.untilTs > now()) {
+    return res.status(403).json({ ok: false, error: "IP blocked temporarily." });
+  }
 
+  const name = `guest_${nanoid(5)}`;
+  const pass = nanoid(10);
+  const u = createUser(name, pass);
+  if (!u) return res.status(500).json({ ok: false, error: "Guest failed." });
+
+  u.badges = ["beta", "guest"];
   const token = signToken(u);
-  db.sessions.set(token, { userId: u.id, createdAt: now() });
 
-  return res.json({ ok: true, token, user: userPublic(u) });
+  res.cookie("tk", token, { httpOnly: true, sameSite: "lax", secure: false });
+  persistAll();
+  res.json({ ok: true, token, user: publicUser(u) });
 });
 
-app.post("/api/auth/logout", authMiddleware, (req, res) => {
-  if (req.token) db.sessions.delete(req.token);
-  return res.json({ ok: true });
+app.post("/api/auth/logout", (req, res) => {
+  res.clearCookie("tk");
+  res.json({ ok: true });
 });
 
-app.get("/api/users/me", authMiddleware, (req, res) => {
-  req.user.lastSeen = now();
-  return res.json({ ok: true, user: userPublic(req.user) });
-});
+// -------------------- State bootstrap --------------------
+app.get("/api/state/bootstrap", requireAuth, (req, res) => {
+  const u = getAuthedUser(req);
 
-// -------------------------
-// Bootstrap state
-// -------------------------
-app.get("/api/state/bootstrap", authMiddleware, (req, res) => {
-  const me = req.user;
-  me.lastSeen = now();
+  // global
+  const globalMsgs = (db.state.global.messages || []).slice(-250);
 
-  const friendsSet = db.friends.get(me.id) || new Set();
-  const friends = Array.from(friendsSet).map((fid) => {
-    const fu = db.usersById.get(fid);
-    return fu ? userPublic(fu) : null;
-  }).filter(Boolean);
+  // friends list (public)
+  const friends = (u.friends || [])
+    .map(fid => Object.values(db.users).find(x => x.id === fid))
+    .filter(Boolean)
+    .map(publicUser);
 
-  const groups = Array.from(db.groups.values())
-    .filter(g => (db.groupMembers.get(g.id) || new Set()).has(me.id))
-    .map(g => ({
-      id: g.id,
-      name: g.name,
-      ownerId: g.ownerId,
-      limit: g.limit,
-      cooldownSeconds: g.cooldownSeconds
-    }));
+  // dm threads summary: last 50 messages per dm
+  const dms = [];
+  for (const f of friends) {
+    const { key, thread } = upsertDmPair(u.id, f.id);
+    dms.push({
+      peer: f,
+      pairKey: key,
+      messages: (thread.messages || []).slice(-80)
+    });
+  }
 
-  // optional: include online user list (unique users, not sockets)
-  const onlineUsers = getOnlineUsersList();
+  // groups
+  const myGroups = (db.state.groups.list || []).filter(g => (g.members || []).includes(u.id));
+  const groupThreads = myGroups.map(g => ({
+    group: g,
+    messages: (db.state.groups.threads?.[g.id]?.messages || []).slice(-120)
+  }));
 
-  // global feed
-  const global = {
-    messages: db.messages.global.slice(-80),
-    cursor: db.messages.global.length ? db.messages.global[0].id : null,
-    hasMore: db.messages.global.length > 80
-  };
-
-  return res.json({
+  res.json({
     ok: true,
-    global,
+    me: publicUser(u),
+    global: { messages: globalMsgs },
     friends,
-    groups,
-    onlineUsers
+    dms,
+    groups: myGroups,
+    groupThreads
   });
 });
 
-// -------------------------
-// Messages read
-// -------------------------
-app.get("/api/messages/global", authMiddleware, (req, res) => {
-  const limit = clampInt(req.query.limit, 80, 1, 200);
-  const before = safeStr(req.query.before || "", 64);
+// -------------------- Friends --------------------
+app.post("/api/friends/add", requireAuth, (req, res) => {
+  const u = getAuthedUser(req);
+  const targetName = String(req.body?.username || "").trim();
+  if (!targetName) return res.status(400).json({ ok: false, error: "Missing username." });
 
-  let list = db.messages.global.slice();
-  if (before) {
-    const idx = list.findIndex(m => m.id === before);
-    if (idx > 0) list = list.slice(0, idx);
+  const t = ensureUser(targetName);
+  if (!t) return res.status(404).json({ ok: false, error: "User not found." });
+
+  if (t.id === u.id) return res.status(400).json({ ok: false, error: "Cannot friend yourself." });
+
+  u.friends = Array.isArray(u.friends) ? u.friends : [];
+  t.friends = Array.isArray(t.friends) ? t.friends : [];
+
+  if (!u.friends.includes(t.id)) u.friends.push(t.id);
+  if (!t.friends.includes(u.id)) t.friends.push(u.id);
+
+  persistAll();
+  res.json({ ok: true, friend: publicUser(t) });
+});
+
+// -------------------- Groups --------------------
+app.get("/api/groups", requireAuth, (req, res) => {
+  const u = getAuthedUser(req);
+  const myGroups = (db.state.groups.list || []).filter(g => (g.members || []).includes(u.id));
+  res.json({ ok: true, groups: myGroups });
+});
+
+app.post("/api/groups/create", requireAuth, (req, res) => {
+  const u = getAuthedUser(req);
+  const name = String(req.body?.name || "").trim();
+  if (!name) return res.status(400).json({ ok: false, error: "Missing group name." });
+
+  const id = nanoid(10);
+  const cooldownSeconds = Math.max(0, Math.min(20, Number(req.body?.cooldownSeconds || 3)));
+
+  const g = {
+    id,
+    name,
+    ownerId: u.id,
+    createdAt: now(),
+    members: [u.id],
+    cooldownSeconds
+  };
+  db.state.groups.list.push(g);
+  db.state.groups.threads[id] = { messages: [] };
+
+  persistAll();
+  ioEmitGroupsUpdate();
+  res.json({ ok: true, group: g });
+});
+
+// “Discover” simple: list all groups (optional)
+app.get("/api/groups/discover", requireAuth, (req, res) => {
+  const all = (db.state.groups.list || []).slice(-100);
+  res.json({ ok: true, groups: all });
+});
+
+app.post("/api/groups/join", requireAuth, (req, res) => {
+  const u = getAuthedUser(req);
+  const groupId = String(req.body?.groupId || "").trim();
+  const g = getGroup(groupId);
+  if (!g) return res.status(404).json({ ok: false, error: "Group not found." });
+
+  g.members = Array.isArray(g.members) ? g.members : [];
+  if (!g.members.includes(u.id)) g.members.push(u.id);
+
+  persistAll();
+  ioEmitGroupsUpdate();
+  res.json({ ok: true, group: g });
+});
+
+// -------------------- Messages --------------------
+function canEditDelete(msg, userId) {
+  const age = now() - (msg.ts || 0);
+  const mine = msg.user?.id === userId;
+  return mine && age <= 60_000;
+}
+
+function findMessage(scope, targetId, messageId) {
+  if (scope === "global") {
+    const arr = db.state.global.messages || [];
+    return { arr, idx: arr.findIndex(m => m.id === messageId) };
   }
-  const out = list.slice(-limit);
-  return res.json({
-    ok: true,
-    messages: out,
-    cursor: out.length ? out[0].id : null,
-    hasMore: list.length > out.length
-  });
-});
-
-app.get("/api/messages/dm/:peerId", authMiddleware, (req, res) => {
-  const me = req.user;
-  const peerId = safeStr(req.params.peerId, 64);
-  const peer = db.usersById.get(peerId);
-  if (!peer) return res.status(404).json({ ok: false, error: "User not found" });
-
-  const key = dmKey(me.id, peerId);
-  const list = db.messages.dm.get(key) || [];
-  const limit = clampInt(req.query.limit, 80, 1, 200);
-  const before = safeStr(req.query.before || "", 64);
-
-  let slice = list.slice();
-  if (before) {
-    const idx = slice.findIndex(m => m.id === before);
-    if (idx > 0) slice = slice.slice(0, idx);
+  if (scope === "dm") {
+    const th = db.state.dms?.[targetId];
+    if (!th) return { arr: null, idx: -1 };
+    const arr = th.messages || [];
+    return { arr, idx: arr.findIndex(m => m.id === messageId) };
   }
-  const out = slice.slice(-limit);
-
-  return res.json({
-    ok: true,
-    peer: userPublic(peer),
-    messages: out,
-    cursor: out.length ? out[0].id : null,
-    hasMore: slice.length > out.length
-  });
-});
-
-app.get("/api/messages/group/:groupId", authMiddleware, (req, res) => {
-  const me = req.user;
-  const gid = safeStr(req.params.groupId, 64);
-  const g = db.groups.get(gid);
-  if (!g) return res.status(404).json({ ok: false, error: "Group not found" });
-
-  const members = db.groupMembers.get(gid) || new Set();
-  if (!members.has(me.id)) return res.status(403).json({ ok: false, error: "Not a member" });
-
-  const list = db.messages.group.get(gid) || [];
-  const limit = clampInt(req.query.limit, 90, 1, 200);
-  const before = safeStr(req.query.before || "", 64);
-
-  let slice = list.slice();
-  if (before) {
-    const idx = slice.findIndex(m => m.id === before);
-    if (idx > 0) slice = slice.slice(0, idx);
+  if (scope === "group") {
+    const th = db.state.groups.threads?.[targetId];
+    if (!th) return { arr: null, idx: -1 };
+    const arr = th.messages || [];
+    return { arr, idx: arr.findIndex(m => m.id === messageId) };
   }
-  const out = slice.slice(-limit);
+  return { arr: null, idx: -1 };
+}
 
-  return res.json({
-    ok: true,
-    group: { id: g.id, name: g.name, ownerId: g.ownerId, limit: g.limit, cooldownSeconds: g.cooldownSeconds },
-    messages: out,
-    cursor: out.length ? out[0].id : null,
-    hasMore: slice.length > out.length
-  });
-});
+app.post("/api/messages/send", requireAuth, (req, res) => {
+  const u = getAuthedUser(req);
 
-// -------------------------
-// Send/edit/delete/report
-// -------------------------
-app.post("/api/messages/send", authMiddleware, (req, res) => {
-  const me = req.user;
-  const scope = safeStr(req.body?.scope, 16);
-  const targetId = safeStr(req.body?.targetId || "", 64) || null;
-  const text = safeStr(req.body?.text, 4000).trim();
-  const clientId = safeStr(req.body?.clientId || "", 96);
+  const scope = String(req.body?.scope || "");
+  const targetId = req.body?.targetId ? String(req.body.targetId) : null;
+  const text = String(req.body?.text || "").trim();
+  const clientId = String(req.body?.clientId || "").trim();
 
-  if (!text) return res.status(400).json({ ok: false, error: "Empty message" });
+  if (!scope || !["global", "dm", "group"].includes(scope)) return res.status(400).json({ ok: false, error: "Bad scope." });
+  if (!text) return res.status(400).json({ ok: false, error: "Empty." });
+  if (!clientId) return res.status(400).json({ ok: false, error: "Missing clientId." });
 
-  // idempotency: if client retries, return same message
-  if (clientId) {
-    const key = `${me.id}:${clientId}`;
-    const existingId = db.idempotency.get(key);
-    if (existingId) {
-      // find and return message
-      const msg = findMessageById(scope, targetId, existingId);
-      if (msg) return res.json({ ok: true, message: msg });
+  // idempotency (prevents duplicate sends)
+  db.state.idempotency[u.id] = db.state.idempotency[u.id] || {};
+  const existing = db.state.idempotency[u.id][clientId];
+  if (existing) return res.json({ ok: true, message: existing });
+
+  // DM needs pair key
+  let writeScope = scope;
+  let writeTarget = null;
+
+  if (scope === "dm") {
+    if (!targetId) return res.status(400).json({ ok: false, error: "Missing targetId." });
+    const peer = Object.values(db.users).find(x => x.id === targetId);
+    if (!peer) return res.status(404).json({ ok: false, error: "Peer not found." });
+    // must be friends
+    if (!Array.isArray(u.friends) || !u.friends.includes(peer.id)) {
+      return res.status(403).json({ ok: false, error: "Not friends." });
     }
+    const { key, thread } = upsertDmPair(u.id, peer.id);
+    writeTarget = key; // store by pairKey
+    db.state.dms[key] = thread;
+  } else if (scope === "group") {
+    if (!targetId) return res.status(400).json({ ok: false, error: "Missing groupId." });
+    const g = getGroup(targetId);
+    if (!g) return res.status(404).json({ ok: false, error: "Group not found." });
+    if (!Array.isArray(g.members) || !g.members.includes(u.id)) {
+      return res.status(403).json({ ok: false, error: "Not in group." });
+    }
+    writeTarget = targetId;
+  } else {
+    writeTarget = null;
   }
 
-  // cooldown (example): 2s for global, 1s elsewhere; groups can override
-  const cdMs = computeCooldownMs(me, scope, targetId);
-  if (me.cooldownUntil && now() < me.cooldownUntil) {
-    return res.status(429).json({ ok: false, error: "Cooldown", cooldownUntil: me.cooldownUntil, cooldownMs: cdMs });
+  // cooldown
+  const cooldownSeconds =
+    scope === "group"
+      ? (getGroup(targetId)?.cooldownSeconds || 3)
+      : 2;
+
+  u._cooldownUntil = u._cooldownUntil || 0;
+  if (u._cooldownUntil > now()) {
+    return res.status(429).json({ ok: false, error: "Cooldown", cooldownUntil: u._cooldownUntil, cooldownMs: cooldownSeconds * 1000 });
   }
-  me.cooldownUntil = now() + cdMs;
+  u._cooldownUntil = now() + cooldownSeconds * 1000;
 
   const msg = {
     id: nanoid(12),
     ts: now(),
+    scope: writeScope,
+    targetId: writeTarget,
     text,
-    scope,
-    targetId,
-    user: { id: me.id, username: me.username, color: me.color },
-    clientId: clientId || null
+    user: publicUser(u)
   };
 
   if (scope === "global") {
-    pushMessage(db.messages.global, msg, 800);
-    io.emit("message:new", msg);
+    db.state.global.messages = db.state.global.messages || [];
+    db.state.global.messages.push(msg);
+    db.state.global.messages = db.state.global.messages.slice(-2000);
   } else if (scope === "dm") {
-    if (!targetId) return res.status(400).json({ ok: false, error: "Missing targetId" });
-    const peer = db.usersById.get(targetId);
-    if (!peer) return res.status(404).json({ ok: false, error: "User not found" });
-
-    const key = dmKey(me.id, targetId);
-    const list = db.messages.dm.get(key) || [];
-    pushMessage(list, msg, 500);
-    db.messages.dm.set(key, list);
-
-    // emit only to DM participants
-    emitToUsers([me.id, targetId], "message:new", msg);
+    db.state.dms[writeTarget].messages = db.state.dms[writeTarget].messages || [];
+    db.state.dms[writeTarget].messages.push(msg);
+    db.state.dms[writeTarget].messages = db.state.dms[writeTarget].messages.slice(-1500);
   } else if (scope === "group") {
-    if (!targetId) return res.status(400).json({ ok: false, error: "Missing groupId" });
-    const gid = targetId;
-    const g = db.groups.get(gid);
-    if (!g) return res.status(404).json({ ok: false, error: "Group not found" });
-    const members = db.groupMembers.get(gid) || new Set();
-    if (!members.has(me.id)) return res.status(403).json({ ok: false, error: "Not a member" });
-
-    const list = db.messages.group.get(gid) || [];
-    pushMessage(list, msg, 800);
-    db.messages.group.set(gid, list);
-
-    emitToGroup(gid, "message:new", msg);
-  } else {
-    return res.status(400).json({ ok: false, error: "Bad scope" });
+    db.state.groups.threads[writeTarget] = db.state.groups.threads[writeTarget] || { messages: [] };
+    db.state.groups.threads[writeTarget].messages = db.state.groups.threads[writeTarget].messages || [];
+    db.state.groups.threads[writeTarget].messages.push(msg);
+    db.state.groups.threads[writeTarget].messages = db.state.groups.threads[writeTarget].messages.slice(-2000);
   }
 
-  // store idempotency mapping
-  if (clientId) db.idempotency.set(`${me.id}:${clientId}`, msg.id);
+  db.state.idempotency[u.id][clientId] = msg;
+  persistAll();
 
-  return res.json({ ok: true, message: msg, cooldownUntil: me.cooldownUntil, cooldownMs: cdMs });
+  ioEmitNewMessage(msg, scope, targetId);
+
+  res.json({
+    ok: true,
+    message: msg,
+    cooldownUntil: u._cooldownUntil,
+    cooldownMs: cooldownSeconds * 1000
+  });
 });
 
-app.post("/api/messages/edit", authMiddleware, (req, res) => {
-  const me = req.user;
-  const messageId = safeStr(req.body?.messageId, 64);
-  const text = safeStr(req.body?.text, 4000).trim();
-  const scope = safeStr(req.body?.scope, 16);
-  const targetId = safeStr(req.body?.targetId || "", 64) || null;
+app.post("/api/messages/edit", requireAuth, (req, res) => {
+  const u = getAuthedUser(req);
+  const messageId = String(req.body?.messageId || "").trim();
+  const text = String(req.body?.text || "").trim();
 
-  if (!messageId || !text) return res.status(400).json({ ok: false, error: "Bad request" });
+  if (!messageId || !text) return res.status(400).json({ ok: false, error: "Missing." });
 
-  const msg = findMessageById(scope, targetId, messageId);
-  if (!msg) return res.status(404).json({ ok: false, error: "Not found" });
+  // Find by searching all scopes (simple)
+  // In practice you’d pass scope/targetId, but we’ll do safe scan.
+  const found = scanMessageById(messageId);
+  if (!found) return res.status(404).json({ ok: false, error: "Not found." });
 
-  if (!canEditOrDelete(msg, me)) return res.status(403).json({ ok: false, error: "Edit window expired" });
+  const { arr, idx, scope, emitScope, emitTargetId } = found;
+  const msg = arr[idx];
+
+  if (!canEditDelete(msg, u.id)) return res.status(403).json({ ok: false, error: "Edit window expired." });
 
   msg.text = text;
   msg.editedAt = now();
+  persistAll();
 
-  emitEdit(scope, targetId, msg);
-  return res.json({ ok: true, message: msg });
+  io.emit("message:edit", { message: msg, scope: emitScope, targetId: emitTargetId });
+  res.json({ ok: true, message: msg });
 });
 
-app.post("/api/messages/delete", authMiddleware, (req, res) => {
-  const me = req.user;
-  const messageId = safeStr(req.body?.messageId, 64);
-  const scope = safeStr(req.body?.scope, 16);
-  const targetId = safeStr(req.body?.targetId || "", 64) || null;
+app.post("/api/messages/delete", requireAuth, (req, res) => {
+  const u = getAuthedUser(req);
+  const messageId = String(req.body?.messageId || "").trim();
+  if (!messageId) return res.status(400).json({ ok: false, error: "Missing." });
 
-  const ok = deleteMessageById(scope, targetId, messageId, me);
-  if (!ok) return res.status(400).json({ ok: false, error: "Delete failed" });
+  const found = scanMessageById(messageId);
+  if (!found) return res.status(404).json({ ok: false, error: "Not found." });
 
-  emitDelete(scope, targetId, messageId);
-  return res.json({ ok: true });
+  const { arr, idx, emitScope, emitTargetId } = found;
+  const msg = arr[idx];
+
+  if (!canEditDelete(msg, u.id)) return res.status(403).json({ ok: false, error: "Delete window expired." });
+
+  arr.splice(idx, 1);
+  persistAll();
+
+  io.emit("message:delete", { messageId, scope: emitScope, targetId: emitTargetId });
+  res.json({ ok: true });
 });
 
-app.post("/api/messages/report", authMiddleware, (req, res) => {
-  const me = req.user;
-  const messageId = safeStr(req.body?.messageId, 64);
-  const reason = safeStr(req.body?.reason || "", 400);
+app.post("/api/messages/report", requireAuth, (req, res) => {
+  const u = getAuthedUser(req);
+  const messageId = String(req.body?.messageId || "").trim();
+  const reason = String(req.body?.reason || "").trim();
 
-  // store report with enough context for bot
-  const rpt = {
-    id: nanoid(10),
-    ts: now(),
-    reporter: { id: me.id, username: me.username },
-    messageId,
-    reason
-  };
-  db.reports.push(rpt);
-  pushMessage(db.reports, rpt, 2000);
+  if (!messageId) return res.status(400).json({ ok: false, error: "Missing messageId." });
 
-  // Optional: also emit to admin sockets if you want a built-in admin panel later
-  emitToAdmins("report:new", rpt);
+  const found = scanMessageById(messageId);
+  if (!found) return res.status(404).json({ ok: false, error: "Not found." });
 
-  return res.json({ ok: true });
-});
+  const { message, emitScope, emitTargetId } = found;
 
-// -------------------------
-// Friends + Groups
-// -------------------------
-app.post("/api/friends/request", authMiddleware, (req, res) => {
-  const me = req.user;
-  const username = safeStr(req.body?.username, 64);
-  const u = db.usersByUsername.get(lower(username));
-  if (!u) return res.status(404).json({ ok: false, error: "User not found" });
-  if (u.id === me.id) return res.status(400).json({ ok: false, error: "Cannot friend yourself" });
-
-  // simple: auto-accept for now (you can add requests later)
-  if (!db.friends.has(me.id)) db.friends.set(me.id, new Set());
-  if (!db.friends.has(u.id)) db.friends.set(u.id, new Set());
-  db.friends.get(me.id).add(u.id);
-  db.friends.get(u.id).add(me.id);
-
-  return res.json({ ok: true });
-});
-
-app.post("/api/groups/create", authMiddleware, (req, res) => {
-  const me = req.user;
-  const name = safeStr(req.body?.name, 48).trim() || "Group Chat";
-  const limit = clampInt(req.body?.limit ?? 25, 25, 2, 200);
-  const cooldownSeconds = clampInt(req.body?.cooldownSeconds ?? 2, 2, 0, 30);
-
-  const gid = nanoid(10);
-  const g = {
-    id: gid,
-    name,
-    ownerId: me.id,
-    limit,
-    cooldownSeconds,
-    createdAt: now()
-  };
-  db.groups.set(gid, g);
-  db.groupMembers.set(gid, new Set([me.id]));
-  db.messages.group.set(gid, []);
-
-  return res.json({ ok: true, group: g });
-});
-
-// -------------------------
-// Bot integration endpoints
-// (server-to-bot via polling OR bot-to-server via secret)
-// -------------------------
-
-// Bot polls reports
-app.get("/api/bot/reports", (req, res) => {
-  if (!isBot(req)) return res.status(403).json({ ok: false, error: "Forbidden" });
-  const limit = clampInt(req.query.limit ?? 20, 20, 1, 100);
-  const out = db.reports.slice(-limit);
-  return res.json({ ok: true, reports: out });
-});
-
-// Bot deletes a user (and applies progressive ban policy)
-app.post("/api/bot/deleteUser", (req, res) => {
-  if (!isBot(req)) return res.status(403).json({ ok: false, error: "Forbidden" });
-  const username = safeStr(req.body?.username, 64);
-  const u = db.usersByUsername.get(lower(username));
-  if (!u) return res.status(404).json({ ok: false, error: "User not found" });
-
-  // progressive bans: 3d -> 7d -> 365d -> permanent
-  const key = lower(u.username);
-  const prev = db.bans.user.get(key) || { strikes: 0, until: 0, permanent: false };
-  const strikes = (prev.strikes || 0) + 1;
-
-  let until = 0;
-  let permanent = false;
-
-  if (strikes === 1) until = now() + 3 * 24 * 60 * 60 * 1000;
-  else if (strikes === 2) until = now() + 7 * 24 * 60 * 60 * 1000;
-  else if (strikes === 3) until = now() + 365 * 24 * 60 * 60 * 1000;
-  else permanent = true;
-
-  db.bans.user.set(key, { strikes, until, permanent });
-
-  // “erase” account: remove from maps and disconnect sockets
-  eraseUser(u.id);
-
-  return res.json({ ok: true, strikes, until, permanent });
-});
-
-// Bot IP timeout/ban
-app.post("/api/bot/banIp", (req, res) => {
-  if (!isBot(req)) return res.status(403).json({ ok: false, error: "Forbidden" });
-  const ip = safeStr(req.body?.ip, 128);
-  const seconds = clampInt(req.body?.seconds ?? 3600, 3600, 60, 365*24*3600);
-  db.bans.ip.set(ip, { until: now() + seconds * 1000, permanent: false, strikes: 1 });
-  return res.json({ ok: true });
-});
-
-// Bot announcement to global (special message kind)
-app.post("/api/bot/announce", (req, res) => {
-  if (!isBot(req)) return res.status(403).json({ ok: false, error: "Forbidden" });
-  const text = safeStr(req.body?.text, 2000).trim();
-  if (!text) return res.status(400).json({ ok: false, error: "Empty" });
-
-  const msg = {
+  const rep = {
     id: nanoid(12),
     ts: now(),
-    text,
-    scope: "global",
-    targetId: null,
-    kind: "announcement",
-    user: { id: "system", username: "tonkotsu", color: "#ffd278" }
+    messageId,
+    scope: emitScope,
+    targetId: emitTargetId || null,
+    reporter: publicUser(u),
+    reason,
+    snapshot: message
   };
-  pushMessage(db.messages.global, msg, 800);
-  io.emit("message:new", msg);
-  return res.json({ ok: true, message: msg });
+  db.reports.push(rep);
+  db.reports = db.reports.slice(-5000);
+  persistAll();
+
+  io.emit("report:new", rep);
+  res.json({ ok: true });
 });
 
-function isBot(req) {
-  const hdr = req.headers["x-tonkotsu-bot-secret"];
-  return typeof hdr === "string" && hdr === ADMIN_SHARED_SECRET;
-}
-
-function clampInt(v, def, min, max) {
-  const n = Number(v);
-  if (!Number.isFinite(n)) return def;
-  return Math.max(min, Math.min(max, Math.floor(n)));
-}
-
-function findMessageById(scope, targetId, messageId) {
-  if (scope === "global") return db.messages.global.find(m => m.id === messageId) || null;
-  if (scope === "dm") {
-    if (!targetId) return null;
-    // We don't know both ids; search all dm threads (fine for dev, not prod)
-    for (const list of db.messages.dm.values()) {
-      const m = list.find(x => x.id === messageId);
-      if (m) return m;
-    }
-    return null;
+function scanMessageById(messageId) {
+  // global
+  {
+    const arr = db.state.global.messages || [];
+    const idx = arr.findIndex(m => m.id === messageId);
+    if (idx >= 0) return { arr, idx, message: arr[idx], scope: "global", emitScope: "global", emitTargetId: null };
   }
-  if (scope === "group") {
-    const list = db.messages.group.get(targetId) || [];
-    return list.find(m => m.id === messageId) || null;
+  // dms (pair keys)
+  for (const pairKey of Object.keys(db.state.dms || {})) {
+    const arr = db.state.dms[pairKey]?.messages || [];
+    const idx = arr.findIndex(m => m.id === messageId);
+    if (idx >= 0) return { arr, idx, message: arr[idx], scope: "dm", emitScope: "dm", emitTargetId: pairKey };
+  }
+  // groups
+  for (const gid of Object.keys(db.state.groups.threads || {})) {
+    const arr = db.state.groups.threads[gid]?.messages || [];
+    const idx = arr.findIndex(m => m.id === messageId);
+    if (idx >= 0) return { arr, idx, message: arr[idx], scope: "group", emitScope: "group", emitTargetId: gid };
   }
   return null;
 }
 
-function deleteMessageById(scope, targetId, messageId, me) {
-  if (scope === "global") {
-    const list = db.messages.global;
-    const idx = list.findIndex(m => m.id === messageId);
-    if (idx < 0) return false;
-    if (!canEditOrDelete(list[idx], me)) return false;
-    list.splice(idx, 1);
-    return true;
-  }
-  if (scope === "group") {
-    const list = db.messages.group.get(targetId) || [];
-    const idx = list.findIndex(m => m.id === messageId);
-    if (idx < 0) return false;
-    if (!canEditOrDelete(list[idx], me)) return false;
-    list.splice(idx, 1);
-    db.messages.group.set(targetId, list);
-    return true;
-  }
-  if (scope === "dm") {
-    for (const [k, list] of db.messages.dm.entries()) {
-      const idx = list.findIndex(m => m.id === messageId);
-      if (idx < 0) continue;
-      if (!canEditOrDelete(list[idx], me)) return false;
-      list.splice(idx, 1);
-      db.messages.dm.set(k, list);
-      return true;
-    }
-    return false;
-  }
-  return false;
-}
+// -------------------- Settings (basic) --------------------
+app.post("/api/users/bio", requireAuth, (req, res) => {
+  const u = getAuthedUser(req);
+  u.bio = String(req.body?.bio || "").slice(0, 220);
+  persistAll();
+  res.json({ ok: true, user: publicUser(u) });
+});
 
-function emitEdit(scope, targetId, msg) {
-  if (scope === "global") io.emit("message:edit", msg);
-  else if (scope === "group") emitToGroup(targetId, "message:edit", msg);
-  else if (scope === "dm") {
-    // emit to both participants by scanning dm thread
-    emitToUsers(getDmParticipants(msg), "message:edit", msg);
-  }
-}
+// -------------------- Bot endpoints --------------------
+app.post("/api/bot/deleteUser", requireBotSecret, (req, res) => {
+  const username = String(req.body?.username || "").trim();
+  const u = ensureUser(username);
+  if (!u) return res.status(404).json({ ok: false, error: "User not found." });
 
-function emitDelete(scope, targetId, messageId) {
-  const payload = { messageId, scope, targetId: targetId || null };
-  if (scope === "global") io.emit("message:delete", payload);
-  else if (scope === "group") emitToGroup(targetId, "message:delete", payload);
-  else if (scope === "dm") io.emit("message:delete", payload); // fine for dev; tighten later
-}
+  // progressive ban logic
+  u.strikes = Number(u.strikes || 0) + 1;
 
-function getDmParticipants(msg) {
-  // in this baseline, dm messages store targetId = peerId
-  // sender is msg.user.id
-  const a = msg.user?.id;
-  const b = msg.targetId;
-  return [a, b].filter(Boolean);
-}
-
-// -------------------------
-// Socket.IO presence + unique online users
-// -------------------------
-const online = {
-  // userId -> Set(socketId)
-  socketsByUserId: new Map(),
-  // socketId -> userId
-  userIdBySocketId: new Map(),
-  // userId -> mode
-  presence: new Map()
-};
-
-io.on("connection", (socket) => {
-  // token may be in handshake auth
-  const token = socket.handshake.auth?.token || null;
-  let user = null;
-
-  try {
-    const userId = token ? verifyToken(token) : null;
-    user = userId ? db.usersById.get(userId) : null;
-  } catch {}
-
-  if (!user) {
-    socket.disconnect(true);
-    return;
+  if (u.strikes === 1) {
+    u.bannedUntil = now() + 3 * 24 * 60 * 60 * 1000; // 3 days
+  } else if (u.strikes === 2) {
+    u.bannedUntil = now() + 7 * 24 * 60 * 60 * 1000; // 7 days
+  } else if (u.strikes >= 3) {
+    u.bannedPermanent = true; // erased forever
+    u.bannedUntil = 0;
   }
 
-  // register
-  online.userIdBySocketId.set(socket.id, user.id);
-  if (!online.socketsByUserId.has(user.id)) online.socketsByUserId.set(user.id, new Set());
-  online.socketsByUserId.get(user.id).add(socket.id);
-
-  // default presence
-  if (!online.presence.has(user.id)) online.presence.set(user.id, "online");
-
-  // join rooms by userId, plus group rooms
-  socket.join(`user:${user.id}`);
-  const groups = Array.from(db.groups.values()).filter(g => (db.groupMembers.get(g.id) || new Set()).has(user.id));
-  for (const g of groups) socket.join(`group:${g.id}`);
-
-  broadcastOnline();
-
-  socket.on("presence:set", (p) => {
-    const mode = safeStr(p?.mode, 16);
-    const allowed = new Set(["online", "idle", "dnd", "invisible"]);
-    if (!allowed.has(mode)) return;
-    online.presence.set(user.id, mode);
-    broadcastOnline();
-  });
-
-  socket.on("disconnect", () => {
-    online.userIdBySocketId.delete(socket.id);
-    const set = online.socketsByUserId.get(user.id);
-    if (set) {
-      set.delete(socket.id);
-      if (set.size === 0) {
-        online.socketsByUserId.delete(user.id);
-        online.presence.delete(user.id);
-      }
-    }
-    broadcastOnline();
+  persistAll();
+  res.json({
+    ok: true,
+    username: u.username,
+    strikes: u.strikes,
+    until: u.bannedUntil || null,
+    permanent: !!u.bannedPermanent
   });
 });
 
-function getOnlineUsersList() {
+app.post("/api/bot/announce", requireBotSecret, (req, res) => {
+  const text = String(req.body?.text || "").trim();
+  if (!text) return res.status(400).json({ ok: false, error: "Missing text." });
+
+  const msg = {
+    id: nanoid(12),
+    ts: now(),
+    scope: "global",
+    targetId: null,
+    text,
+    kind: "announcement",
+    user: { id: "system", username: "tonkotsu", color: "hsl(48 95% 70%)", badges: ["announcement"] }
+  };
+
+  db.state.global.messages = db.state.global.messages || [];
+  db.state.global.messages.push(msg);
+  db.state.global.messages = db.state.global.messages.slice(-2000);
+  persistAll();
+
+  io.emit("message:new", { message: msg, scope: "global", targetId: null });
+  res.json({ ok: true });
+});
+
+app.post("/api/bot/banIp", requireBotSecret, (req, res) => {
+  const ip = String(req.body?.ip || "").trim();
+  const seconds = Number(req.body?.seconds || 3600);
+  if (!ip) return res.status(400).json({ ok: false, error: "Missing ip." });
+  const untilTs = now() + Math.max(60, Math.min(30 * 24 * 3600, seconds)) * 1000;
+  db.bans.ip[ip] = { untilTs };
+  persistAll();
+  res.json({ ok: true, ip, untilTs });
+});
+
+app.get("/api/bot/reports", requireBotSecret, (req, res) => {
+  const limit = Math.max(1, Math.min(50, Number(req.query?.limit || 10)));
+  const reports = (db.reports || []).slice(-limit);
+  res.json({ ok: true, reports });
+});
+
+// -------------------- Socket.IO --------------------
+const server = http.createServer(app);
+const io = new Server(server, {
+  cors: { origin: true, credentials: true }
+});
+
+// online presence map (dedupe multi-tab)
+const online = {
+  // userId -> { user, sockets:Set, mode, lastSeen }
+  byUser: new Map()
+};
+
+function onlineList() {
   const out = [];
-  for (const [userId, sockSet] of online.socketsByUserId.entries()) {
-    const u = db.usersById.get(userId);
-    if (!u) continue;
+  for (const v of online.byUser.values()) {
     out.push({
-      id: u.id,
-      username: u.username,
-      mode: online.presence.get(userId) || "online"
+      id: v.user.id,
+      username: v.user.username,
+      mode: v.mode || "online",
+      color: v.user.color
     });
   }
-  // stable order
   out.sort((a, b) => a.username.localeCompare(b.username));
   return out;
 }
 
-function broadcastOnline() {
-  const users = getOnlineUsersList();
-  io.emit("users:online", { users, count: users.length });
+function emitOnline() {
+  const list = onlineList();
+  io.emit("users:online", { count: list.length, users: list });
 }
 
-function emitToUsers(userIds, event, payload) {
-  const uniq = Array.from(new Set(userIds.filter(Boolean)));
-  for (const uid of uniq) io.to(`user:${uid}`).emit(event, payload);
-}
-
-function emitToGroup(groupId, event, payload) {
-  io.to(`group:${groupId}`).emit(event, payload);
-}
-
-function emitToAdmins(event, payload) {
-  // baseline: anyone with "Owner" badge is admin
-  for (const [id, u] of db.usersById.entries()) {
-    if ((u.badges || []).includes("Owner")) io.to(`user:${id}`).emit(event, payload);
+function ioEmitNewMessage(msg, scope, rawTargetId) {
+  // emit payload that client understands
+  if (scope === "global") {
+    io.emit("message:new", { message: msg, scope: "global", targetId: null });
+  } else if (scope === "dm") {
+    // rawTargetId is peerId; stored targetId is pairKey
+    // We can emit to all, client will filter by pairKey
+    io.emit("message:new", { message: msg, scope: "dm", targetId: msg.targetId });
+  } else if (scope === "group") {
+    io.emit("message:new", { message: msg, scope: "group", targetId: rawTargetId });
   }
 }
 
-function eraseUser(userId) {
-  const u = db.usersById.get(userId);
-  if (!u) return;
+function ioEmitGroupsUpdate() {
+  io.emit("groups:update", { groups: db.state.groups.list || [] });
+}
 
-  // remove from user maps
-  db.usersById.delete(userId);
-  db.usersByUsername.delete(lower(u.username));
-
-  // remove from friends sets
-  for (const [k, set] of db.friends.entries()) {
-    if (set.has(userId)) set.delete(userId);
+io.use((socket, next) => {
+  try {
+    const token = socket.handshake.auth?.token;
+    if (!token) return next(new Error("no token"));
+    const payload = jwt.verify(token, JWT_SECRET);
+    const uid = payload?.uid;
+    const u = Object.values(db.users).find(x => x.id === uid);
+    if (!u) return next(new Error("bad token"));
+    if (u.bannedPermanent) return next(new Error("banned"));
+    if (u.bannedUntil && u.bannedUntil > now()) return next(new Error("banned"));
+    socket.data.user = u;
+    next();
+  } catch (e) {
+    next(new Error("auth failed"));
   }
-  db.friends.delete(userId);
+});
 
-  // remove from group members
-  for (const [gid, set] of db.groupMembers.entries()) {
-    if (set.has(userId)) set.delete(userId);
-  }
+io.on("connection", (socket) => {
+  const u = socket.data.user;
+  u.lastSeen = now();
 
-  // kick sockets
-  const sockSet = online.socketsByUserId.get(userId);
-  if (sockSet) {
-    for (const sid of sockSet) {
-      const s = io.sockets.sockets.get(sid);
-      if (s) s.disconnect(true);
+  // register online
+  const existing = online.byUser.get(u.id) || { user: publicUser(u), sockets: new Set(), mode: "online", lastSeen: now() };
+  existing.user = publicUser(u);
+  existing.sockets.add(socket.id);
+  existing.lastSeen = now();
+  online.byUser.set(u.id, existing);
+
+  emitOnline();
+
+  socket.on("presence:set", (p) => {
+    const mode = String(p?.mode || "online");
+    const entry = online.byUser.get(u.id);
+    if (entry) {
+      entry.mode = ["online", "idle", "dnd", "invisible"].includes(mode) ? mode : "online";
+      emitOnline();
     }
-  }
-}
+  });
 
-// -------------------------
-// Seed admin
-// -------------------------
-function seedAdminUser() {
-  const username = "owner";
-  if (db.usersByUsername.has(lower(username))) return;
+  socket.on("typing", (p) => {
+    // pass-through typing
+    const scope = String(p?.scope || "");
+    const targetId = p?.targetId ? String(p.targetId) : null;
+    const typing = !!p?.typing;
 
-  const id = nanoid(10);
-  const pass = "changeme"; // change immediately
-  const passHash = bcrypt.hashSync(pass, 10);
-  const u = {
-    id,
-    username,
-    passHash,
-    color: "#ffd278",
-    badges: ["Owner", "Early Access"],
-    createdAt: now(),
-    lastSeen: now(),
-    bio: "Site owner."
-  };
-  db.usersById.set(id, u);
-  db.usersByUsername.set(lower(username), u);
-  db.friends.set(id, new Set());
-}
+    io.emit("typing:update", {
+      scope,
+      targetId,
+      typing,
+      user: { id: u.id, username: u.username }
+    });
+  });
 
-// -------------------------
-server.listen(PORT, () => {
-  console.log(`tonkotsu server listening on :${PORT}`);
+  socket.on("disconnect", () => {
+    const entry = online.byUser.get(u.id);
+    if (entry) {
+      entry.sockets.delete(socket.id);
+      if (entry.sockets.size === 0) {
+        online.byUser.delete(u.id);
+      }
+    }
+    emitOnline();
+  });
+});
+
+// -------------------- Start --------------------
+server.listen(PORT, "0.0.0.0", () => {
+  console.log("Listening on", PORT);
 });
