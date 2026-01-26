@@ -5,10 +5,7 @@
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>tonkotsu.online</title>
 
-    <!-- site icon -->
     <link rel="icon" href="https://em-content.zobj.net/source/google/439/steaming-bowl_1f35c.png" />
-
-    <!-- CSS MUST be inside <head> -->
     <link rel="stylesheet" href="/style.css" />
   </head>
 
@@ -16,9 +13,7 @@
     <!-- LOGIN -->
     <div id="loginWrap" class="loginWrap">
       <div class="loginCard">
-        <div class="titleRow">
-          <div class="subtitle" id="subtitle">tonkotsu.online <span class="beta">beta</span></div>
-        </div>
+        <div class="subtitle" id="subtitle">tonkotsu.online <span class="beta">beta</span></div>
 
         <h2 class="h2">Sign in</h2>
         <div id="loginMsg" class="loginMsg">Sign in or use Guest.</div>
@@ -43,7 +38,7 @@
       </div>
     </div>
 
-    <!-- LOADING OVERLAY -->
+    <!-- LOADING -->
     <div id="loading" class="loading">
       <div class="loadingCard">
         <div id="loadMsg" class="loadMsg">Loading…</div>
@@ -53,10 +48,8 @@
 
     <!-- APP -->
     <div id="app" class="app" style="display:none">
-      <!-- TOP BAR -->
       <div class="topbar">
         <div class="subtitle" id="subtitleTop">tonkotsu.online <span class="beta">beta</span></div>
-
         <div class="topRight">
           <button id="btnUser" class="btn mini">profile</button>
           <button id="btnLogout" class="btn mini danger">logout</button>
@@ -64,7 +57,7 @@
       </div>
 
       <div class="layout">
-        <!-- LEFT: threads -->
+        <!-- LEFT -->
         <aside class="left">
           <div class="leftHead">
             <div class="leftTitle">Messages</div>
@@ -73,18 +66,16 @@
               <button id="btnAddFriend" class="btn mini">+ friend</button>
             </div>
           </div>
-
           <div class="leftSearch">
             <input id="searchThreads" class="input" placeholder="search..." />
           </div>
-
           <div id="threadList" class="threadList"></div>
         </aside>
 
-        <!-- CENTER: messages -->
+        <!-- CENTER -->
         <main class="center">
           <div class="centerHead">
-            <div id="centerH" class="centerH">Loading…</div>
+            <div id="centerH" class="centerH">Global</div>
             <div id="centerS" class="centerS"></div>
           </div>
 
@@ -94,10 +85,12 @@
             <div class="cooldownWrap">
               <div id="cooldownBar" class="cooldownBar"></div>
             </div>
+
             <div class="composerRow">
               <textarea id="msgInput" class="input msgInput" placeholder="Message..." rows="1"></textarea>
               <button id="btnSend" class="btn primary">Send</button>
             </div>
+
             <div class="composerMeta">
               <div id="typingText" class="typingText"></div>
               <div id="cooldownText" class="cooldownText"></div>
@@ -105,7 +98,7 @@
           </div>
         </main>
 
-        <!-- RIGHT: online users -->
+        <!-- RIGHT -->
         <aside class="right">
           <div class="rightHead">
             <div class="rightTitle">Online users</div>
@@ -143,11 +136,10 @@
     <!-- CONTEXT MENU -->
     <div id="ctx" class="ctx"></div>
 
-    <!-- CUSTOM CURSOR -->
+    <!-- CURSOR -->
     <div id="cursor" class="cursor"></div>
     <div id="trail" class="trail"></div>
 
-    <!-- scripts at end of body -->
     <script src="/socket.io/socket.io.js"></script>
     <script src="/script.js"></script>
   </body>
