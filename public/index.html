@@ -1,596 +1,149 @@
-<!-- public/index.html -->
 <!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>tonkotsu.online</title>
-
-  <!-- Favicon -->
-  <link rel="icon" href="https://em-content.zobj.net/source/google/439/steaming-bowl_1f35c.png" />
-
-  <style>
-    :root{
-      --bg:#07080b;
-      --panel:#0b0d12;
-      --panel2:#0f1219;
-      --border:rgba(130,140,170,.18);
-      --text:rgba(235,240,255,.92);
-      --muted:rgba(170,180,205,.78);
-      --muted2:rgba(150,160,185,.62);
-      --accent:rgba(140,180,255,.85);
-      --danger:rgba(255,92,122,.95);
-      --ok:rgba(120,255,190,.9);
-      --shadow:0 18px 40px rgba(0,0,0,.55);
-      --r16:16px;
-      --r20:20px;
-    }
-
-    *{ box-sizing:border-box; }
-    html,body{ height:100%; }
-    body{
-      margin:0;
-      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, "Apple Color Emoji","Segoe UI Emoji";
-      background: radial-gradient(900px 900px at 30% -20%, rgba(90,120,255,.12), transparent 55%),
-                  radial-gradient(900px 900px at 110% 20%, rgba(120,255,190,.10), transparent 55%),
-                  var(--bg);
-      color:var(--text);
-      overflow:hidden;
-    }
-
-    a{ color:inherit; text-decoration:none; }
-    .small{ font-size:12px; color:var(--muted2); line-height:1.35; }
-    .muted{ color:var(--muted); }
-    .btn{
-      border:1px solid var(--border);
-      background:rgba(14,16,22,.9);
-      color:var(--text);
-      padding:10px 12px;
-      border-radius:14px;
-      cursor:pointer;
-      transition: transform .12s ease, border-color .12s ease, background .12s ease;
-      font-weight:600;
-      font-size:13px;
-    }
-    .btn:hover{ transform:translateY(-1px); border-color:rgba(140,180,255,.25); }
-    .btn:active{ transform:translateY(0); }
-    .btn.primary{ border-color:rgba(140,180,255,.35); }
-    .btn.danger{ border-color:rgba(255,92,122,.35); color:rgba(255,200,210,.95); }
-    .input{
-      width:100%;
-      border:1px solid var(--border);
-      background:rgba(8,10,14,.85);
-      color:var(--text);
-      padding:11px 12px;
-      border-radius:14px;
-      outline:none;
-      font-size:14px;
-    }
-    .input:focus{ border-color:rgba(140,180,255,.35); }
-
-    /* LOGIN */
-    #loginWrap{
-      height:100%;
-      display:flex;
-      align-items:center;
-      justify-content:center;
-      padding:26px;
-    }
-    .loginCard{
-      width:min(420px, 92vw);
-      background:rgba(10,12,16,.92);
-      border:1px solid var(--border);
-      border-radius:22px;
-      box-shadow:var(--shadow);
-      padding:18px;
-      backdrop-filter: blur(10px);
-    }
-    .brandRow{
-      display:flex;
-      align-items:center;
-      justify-content:space-between;
-      margin-bottom:12px;
-    }
-    .brand{
-      font-weight:800;
-      letter-spacing:.2px;
-      font-size:16px;
-    }
-    .beta{
-      display:inline-flex;
-      align-items:center;
-      padding:4px 9px;
-      border-radius:999px;
-      border:1px solid rgba(140,180,255,.25);
-      background:rgba(50,70,130,.15);
-      color:rgba(200,220,255,.9);
-      font-size:12px;
-      font-weight:700;
-    }
-    .loginGrid{ display:flex; flex-direction:column; gap:10px; }
-    #loginMsg{ margin-top:8px; font-size:13px; color:var(--muted2); min-height:18px; }
-    .loginBtns{ display:flex; gap:10px; margin-top:10px; }
-    .credits{
-      margin-top:12px;
-      padding-top:12px;
-      border-top:1px solid var(--border);
-      display:flex;
-      flex-direction:column;
-      gap:6px;
-    }
-    .credits .row{ display:flex; gap:10px; flex-wrap:wrap; }
-    .linkchip{
-      border:1px solid var(--border);
-      padding:6px 10px;
-      border-radius:999px;
-      font-size:12px;
-      color:var(--muted);
-      background:rgba(12,14,18,.65);
-    }
-
-    /* LOADING OVERLAY */
-    #loading{
-      position:fixed; inset:0;
-      display:none;
-      align-items:center; justify-content:center;
-      background:rgba(0,0,0,.55);
-      z-index:50;
-    }
-    #loading.show{ display:flex; }
-    .loadCard{
-      width:min(360px, 90vw);
-      background:rgba(10,12,16,.94);
-      border:1px solid var(--border);
-      border-radius:22px;
-      box-shadow:var(--shadow);
-      padding:16px;
-    }
-    .loadTop{ display:flex; align-items:center; justify-content:space-between; }
-    #loadMsg{ font-weight:700; }
-    #loadTag{ font-size:12px; color:var(--muted2); }
-
-    /* APP LAYOUT */
-    #app{
-      height:100%;
-      display:none;
-      padding:14px;
-      gap:12px;
-    }
-    .col{
-      background:rgba(10,12,16,.92);
-      border:1px solid var(--border);
-      border-radius:22px;
-      box-shadow:var(--shadow);
-      backdrop-filter: blur(10px);
-      overflow:hidden;
-      display:flex;
-      flex-direction:column;
-      min-width:0;
-    }
-    .left{ width:300px; }
-    .center{ flex:1; }
-    .right{ width:320px; }
-
-    .topbar{
-      display:flex;
-      align-items:center;
-      justify-content:space-between;
-      padding:12px 12px;
-      border-bottom:1px solid var(--border);
-      background:rgba(12,14,18,.65);
-    }
-    #subtitle{
-      font-weight:800;
-      letter-spacing:.2px;
-    }
-    #subtitle .beta{ margin-left:8px; transform:translateY(-1px); }
-
-    .topBtns{ display:flex; align-items:center; gap:10px; }
-    .pill{
-      display:inline-flex;
-      align-items:center;
-      gap:8px;
-      padding:7px 10px;
-      border-radius:999px;
-      border:1px solid var(--border);
-      background:rgba(8,10,14,.7);
-      font-size:12px;
-      color:var(--muted);
-      white-space:nowrap;
-    }
-    #presenceDot{ width:9px; height:9px; border-radius:999px; background:rgba(120,255,190,.95); }
-    #presenceDot.idle{ background:rgba(255,210,120,.95); }
-    #presenceDot.dnd{ background:rgba(255,92,122,.95); }
-    #presenceDot.inv{ background:rgba(150,160,185,.55); }
-
-    /* LEFT: MESSAGING SIDEBAR */
-    .sectionHead{
-      padding:12px;
-      border-bottom:1px solid var(--border);
-      background:rgba(12,14,18,.55);
-      display:flex;
-      align-items:flex-end;
-      justify-content:space-between;
-      gap:10px;
-    }
-    .sectionHead h3{ margin:0; font-size:13px; letter-spacing:.2px; }
-    #navTag{ font-size:12px; color:var(--muted2); }
-
-    .list{
-      padding:8px;
-      overflow:auto;
-      flex:1;
-    }
-    .nav-item{
-      display:flex;
-      align-items:center;
-      justify-content:space-between;
-      gap:10px;
-      padding:10px 10px;
-      border-radius:16px;
-      border:1px solid transparent;
-      cursor:pointer;
-      color:var(--text);
-    }
-    .nav-item:hover{ background:rgba(14,16,22,.75); border-color:rgba(140,180,255,.12); }
-    .nav-item.active{ background:rgba(20,28,45,.55); border-color:rgba(140,180,255,.22); }
-    .nav-left{ display:flex; flex-direction:column; gap:2px; min-width:0; }
-    .nav-title{ font-weight:800; font-size:13px; }
-    .nav-sub{ font-size:12px; color:var(--muted2); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:220px; }
-
-    /* CENTER: THREAD */
-    .centerHead{
-      padding:12px;
-      border-bottom:1px solid var(--border);
-      background:rgba(12,14,18,.55);
-      display:flex;
-      align-items:flex-end;
-      justify-content:space-between;
-      gap:10px;
-    }
-    #centerH{ margin:0; font-size:14px; font-weight:900; }
-    #centerS{ font-size:12px; color:var(--muted2); }
-    .centerBtns{ display:flex; gap:8px; }
-
-    #centerBody{
-      padding:10px;
-      overflow:auto;
-      flex:1;
-    }
-
-    .msg{
-      border:1px solid var(--border);
-      background:rgba(8,10,14,.55);
-      border-radius:18px;
-      padding:10px 12px;
-      margin-bottom:10px;
-    }
-    .msg-top{
-      display:flex;
-      align-items:center;
-      justify-content:space-between;
-      gap:10px;
-      margin-bottom:6px;
-    }
-    .name{ font-weight:900; font-size:13px; }
-    .time{ font-size:12px; color:var(--muted2); }
-    .body{ font-size:13px; line-height:1.35; color:rgba(235,240,255,.9); }
-    .meta{ margin-top:7px; display:flex; gap:6px; flex-wrap:wrap; }
-    .chip{
-      font-size:11px;
-      padding:4px 8px;
-      border-radius:999px;
-      border:1px solid var(--border);
-      background:rgba(12,14,18,.6);
-      color:var(--muted);
-    }
-    .chip.err{ border-color:rgba(255,92,122,.32); color:rgba(255,200,210,.95); }
-    .chip.ann{ border-color:rgba(140,180,255,.3); color:rgba(210,230,255,.95); }
-
-    /* COMPOSER + COOLDOWN BAR */
-    #composer{
-      border-top:1px solid var(--border);
-      padding:10px;
-      background:rgba(12,14,18,.55);
-      display:flex;
-      flex-direction:column;
-      gap:8px;
-    }
-    .composerRow{ display:flex; gap:10px; }
-    #typingText{ font-size:12px; color:var(--muted2); min-height:16px; }
-    #cooldownText{ font-size:12px; color:var(--muted2); min-height:16px; }
-
-    .cooldownTrack{
-      height:8px;
-      border-radius:999px;
-      border:1px solid var(--border);
-      background:rgba(8,10,14,.55);
-      overflow:hidden;
-    }
-    #cooldownBar{
-      height:100%;
-      width:0%;
-      opacity:0;
-      border-radius:999px;
-      background:rgba(140,180,255,.75);
-      transition: width .08s linear, opacity .18s ease;
-    }
-
-    /* cooldown violation effect */
-    .cd-red{ box-shadow:0 0 0 2px rgba(255,92,122,.25) inset; }
-    .cd-shake{ animation: shake .22s linear 0s 2; }
-    @keyframes shake{
-      0%{ transform:translateX(0); }
-      25%{ transform:translateX(-4px); }
-      50%{ transform:translateX(4px); }
-      75%{ transform:translateX(-3px); }
-      100%{ transform:translateX(0); }
-    }
-
-    /* RIGHT: ONLINE USERS */
-    .card{
-      border:1px solid var(--border);
-      background:rgba(8,10,14,.55);
-      border-radius:18px;
-      padding:12px;
-      margin:10px;
-    }
-    .mini{
-      display:flex;
-      align-items:center;
-      gap:10px;
-      padding:10px 10px;
-      border-radius:16px;
-      border:1px solid var(--border);
-      background:rgba(8,10,14,.45);
-      margin:10px;
-    }
-    .pDot{ width:10px; height:10px; border-radius:999px; background:rgba(120,255,190,.95); }
-    .pDot.idle{ background:rgba(255,210,120,.95); }
-    .pDot.dnd{ background:rgba(255,92,122,.95); }
-    .pDot.inv{ background:rgba(150,160,185,.55); }
-    .mini .left{ display:flex; flex-direction:column; gap:2px; min-width:0; }
-    .mini .t{ font-weight:900; font-size:13px; }
-    .mini .d{ font-size:12px; color:var(--muted2); }
-
-    /* MODAL */
-    #backdrop{
-      position:fixed; inset:0;
-      background:rgba(0,0,0,.6);
-      display:none;
-      align-items:center; justify-content:center;
-      z-index:60;
-      padding:22px;
-    }
-    #backdrop.show{ display:flex; }
-    .modal{
-      width:min(520px, 92vw);
-      background:rgba(10,12,16,.94);
-      border:1px solid var(--border);
-      border-radius:22px;
-      box-shadow:var(--shadow);
-      overflow:hidden;
-    }
-    .modalTop{
-      display:flex;
-      align-items:center;
-      justify-content:space-between;
-      padding:12px;
-      border-bottom:1px solid var(--border);
-      background:rgba(12,14,18,.55);
-    }
-    #modalTitle{ font-weight:900; }
-    #modalClose{ font-size:16px; width:38px; height:32px; border-radius:12px; }
-    #modalBody{ padding:12px; }
-    #modalFoot{ padding:12px; border-top:1px solid var(--border); display:flex; gap:10px; justify-content:flex-end; }
-
-    /* CONTEXT MENU */
-    #ctx{
-      position:fixed;
-      z-index:80;
-      display:none;
-      width:210px;
-      border:1px solid var(--border);
-      background:rgba(10,12,16,.95);
-      border-radius:16px;
-      overflow:hidden;
-      box-shadow:var(--shadow);
-    }
-    #ctx.show{ display:block; }
-    #ctx .item{
-      padding:11px 12px;
-      display:flex;
-      justify-content:space-between;
-      gap:10px;
-      cursor:pointer;
-      border-bottom:1px solid rgba(130,140,170,.10);
-      font-size:13px;
-    }
-    #ctx .item:hover{ background:rgba(18,20,26,.9); }
-    #ctx .item.danger{ color:rgba(255,200,210,.95); }
-
-    /* CUSTOM CURSOR ELEMENTS */
-    #cursor, #trail{
-      position:fixed;
-      left:0; top:0;
-      width:18px; height:18px;
-      border-radius:999px;
-      border:1px solid rgba(140,180,255,.35);
-      background:rgba(140,180,255,.12);
-      transform: translate(-50%,-50%);
-      z-index:9998;
-      pointer-events:none;
-      display:none;
-    }
-    #trail{
-      width:34px; height:34px;
-      border:1px solid rgba(140,180,255,.18);
-      background:rgba(140,180,255,.05);
-      z-index:9997;
-      opacity:.22;
-      display:none;
-    }
-
-    @media (max-width: 980px){
-      .right{ display:none; }
-      .left{ width:280px; }
-    }
-    @media (max-width: 740px){
-      #app{ flex-direction:column; }
-      .left{ width:100%; height:240px; }
-      .center{ height:calc(100% - 240px); }
-    }
-  </style>
+  <link rel="icon" href="https://em-content.zobj.net/source/google/439/steaming-bowl_1f35c.png">
+  <link rel="stylesheet" href="/public/styles.css" />
 </head>
 
 <body>
+  <!-- Custom cursor -->
+  <div id="cursor"></div>
+  <div id="trail"></div>
+
   <!-- LOGIN -->
-  <div id="loginWrap">
+  <div id="loginWrap" class="loginWrap">
     <div class="loginCard">
-      <div class="brandRow">
-        <div class="brand">tonkotsu.online</div>
-        <span class="beta">beta</span>
-      </div>
-
-      <div class="loginGrid">
-        <input id="loginUser" class="input" placeholder="username" autocomplete="username" />
-        <input id="loginPass" class="input" placeholder="password" type="password" autocomplete="current-password" />
-      </div>
-
-      <div id="loginMsg">Sign in or use Guest.</div>
-
-      <div class="loginBtns">
-        <button id="btnLogin" class="btn primary" style="flex:1">Sign in</button>
-        <button id="btnGuest" class="btn" style="flex:1">Guest</button>
-      </div>
-
-      <!-- Optional: "What's new" on login page (your script reads #loginWhatsNew if present) -->
-      <div id="loginWhatsNew" class="credits">
-        <div class="small" style="font-weight:800; color:rgba(235,240,255,.85)">What’s new (beta)</div>
-        <div class="small">This area is wired by script.js. It can show 3 mini “try it” previews.</div>
-      </div>
-
-      <!-- CREDITS under login (requested) -->
-      <div class="credits">
-        <div class="row">
-          <a class="linkchip" href="https://ko-fi.com/" target="_blank" rel="noreferrer">Ko-fi</a>
-          <a class="linkchip" href="https://github.com/" target="_blank" rel="noreferrer">GitHub</a>
+      <div class="loginHeader">
+        <div class="brand">
+          <div class="title">tonkotsu.online <span class="beta">beta</span></div>
+          <div class="sub">Sign in</div>
         </div>
-        <div class="small">© tonkotsu.online — All rights reserved.</div>
+      </div>
+
+      <div id="loginMsg" class="loginMsg">Sign in or use Guest.</div>
+
+      <input id="loginUser" class="input" placeholder="username" autocomplete="username" />
+      <input id="loginPass" class="input" placeholder="password" type="password" autocomplete="current-password" />
+
+      <div class="row">
+        <button id="btnLogin" class="btn primary">Sign in</button>
+        <button id="btnGuest" class="btn">Guest</button>
+      </div>
+
+      <!-- Credits under login (your requirement) -->
+      <div class="credits">
+        <a href="https://github.com/" target="_blank" rel="noreferrer">GitHub</a>
+        <a href="https://ko-fi.com/" target="_blank" rel="noreferrer">Ko-fi</a>
+        <span class="muted">© tonkotsu.online — All rights reserved</span>
       </div>
     </div>
   </div>
 
-  <!-- LOADING -->
-  <div id="loading">
-    <div class="loadCard">
-      <div class="loadTop">
-        <div id="loadMsg">Loading…</div>
-        <div id="loadTag">boot</div>
-      </div>
-      <div class="small" style="margin-top:10px">Please keep this tab open.</div>
+  <!-- LOADING OVERLAY -->
+  <div id="loading" class="loading">
+    <div class="loadingCard">
+      <div id="loadMsg" class="loadMsg">Loading…</div>
+      <div id="loadTag" class="loadTag">boot</div>
     </div>
   </div>
 
   <!-- APP -->
-  <div id="app">
-    <!-- LEFT: messaging sidebar (global + dms + groups) -->
-    <div class="col left">
-      <div class="topbar">
-        <div id="subtitle">tonkotsu.online <span class="beta">beta</span></div>
-        <div class="topBtns">
-          <span class="pill" id="presencePill">
-            <span id="presenceDot"></span>
-            <span id="presenceLabel">online</span>
-          </span>
+  <div id="app" class="app">
+    <header class="topbar">
+      <div id="subtitle" class="subtitle">tonkotsu.online <span class="beta">beta</span></div>
+      <div class="topRight">
+        <button id="btnUser" class="btn mini">profile</button>
+        <button id="btnLogout" class="btn mini danger">logout</button>
+      </div>
+    </header>
+
+    <main class="main">
+      <!-- LEFT: Unified messaging list (friends + groups) -->
+      <aside class="left">
+        <div class="panelHead">
+          <div class="panelTitle">Messages</div>
+          <button id="btnNewGroup" class="btn mini">+ group</button>
         </div>
-      </div>
 
-      <div class="sectionHead">
-        <h3>Messaging</h3>
-        <div id="navTag">global</div>
-      </div>
+        <div class="panelTools">
+          <input id="searchThreads" class="input small" placeholder="search…" />
+          <button id="btnAddFriend" class="btn mini">+ friend</button>
+        </div>
 
-      <div class="list" id="messagingList">
-        <!-- script.js will populate .nav-item entries here -->
-        <!-- We keep .nav-item class for event wiring -->
-        <div class="nav-item active" data-tab="global">
-          <div class="nav-left">
-            <div class="nav-title">Global</div>
-            <div class="nav-sub">Everyone</div>
+        <div id="threadList" class="threadList"></div>
+      </aside>
+
+      <!-- CENTER: Thread -->
+      <section class="center">
+        <div class="centerHead">
+          <div class="centerTitle" id="centerH">Loading…</div>
+          <div class="centerSub" id="centerS"></div>
+        </div>
+
+        <div id="centerBody" class="centerBody"></div>
+
+        <div id="composer" class="composer">
+          <div class="cooldownWrap">
+            <div class="cooldownTrack">
+              <div id="cooldownBar" class="cooldownBar"></div>
+            </div>
+            <div id="cooldownText" class="cooldownText"></div>
           </div>
-          <div class="small muted">#</div>
-        </div>
-      </div>
 
-      <div style="padding:12px; border-top:1px solid var(--border); display:flex; gap:10px;">
-        <button id="btnUser" class="btn" style="flex:1">user</button>
-        <button id="btnLogout" class="btn danger" style="flex:0 0 auto;">Log out</button>
-      </div>
-    </div>
+          <textarea id="msgInput" class="input msgInput" placeholder="Message…" rows="1"></textarea>
+          <button id="btnSend" class="btn primary">Send</button>
+        </div>
 
-    <!-- CENTER: thread -->
-    <div class="col center">
-      <div class="centerHead">
-        <div>
-          <h2 id="centerH">Global</h2>
-          <div id="centerS"></div>
+        <div class="typingRow">
+          <div id="typingText" class="typingText"></div>
         </div>
-        <div class="centerBtns">
-          <button id="btnJumpLastRead" class="btn">Jump</button>
-          <button id="btnRefresh" class="btn">Refresh</button>
-        </div>
-      </div>
+      </section>
 
-      <div id="centerBody"></div>
+      <!-- RIGHT: Online users (compact) -->
+      <aside class="right">
+        <div class="panelHead">
+          <div class="panelTitle">Online users</div>
+          <div class="pill">
+            <span class="dot on" id="presenceDot"></span>
+            <span id="presenceLabel">online</span>
+          </div>
+        </div>
 
-      <div id="composer">
-        <div class="cooldownTrack"><div id="cooldownBar"></div></div>
-        <div style="display:flex; gap:10px;">
-          <input id="msgInput" class="input" placeholder="Type a message…" />
-          <button id="btnSend" class="btn primary" style="flex:0 0 auto;">Send</button>
+        <div class="panelTools">
+          <button id="btnPresenceOnline" class="btn mini">online</button>
+          <button id="btnPresenceIdle" class="btn mini">idle</button>
+          <button id="btnPresenceDnd" class="btn mini">dnd</button>
+          <button id="btnPresenceInv" class="btn mini">invisible</button>
         </div>
-        <div style="display:flex; justify-content:space-between; gap:10px;">
-          <div id="typingText"></div>
-          <div id="cooldownText"></div>
-        </div>
-      </div>
-    </div>
 
-    <!-- RIGHT: online users -->
-    <div class="col right">
-      <div class="topbar">
-        <div id="rightLabel">Online users</div>
-        <div class="topBtns">
-          <div class="pill"><span class="muted">Online:</span>&nbsp;<span id="onlineCount">0</span></div>
-          <button id="btnRightAction" class="btn">Action</button>
+        <div id="onlineUsers" class="onlineUsers"></div>
+
+        <div class="panelFoot">
+          <button id="btnSettings" class="btn mini">settings</button>
         </div>
-      </div>
-      <div id="rightBody"></div>
-    </div>
+      </aside>
+    </main>
   </div>
 
   <!-- MODAL -->
-  <div id="backdrop">
-    <div class="modal" role="dialog" aria-modal="true">
-      <div class="modalTop">
-        <div id="modalTitle"></div>
-        <button id="modalClose" class="btn">✕</button>
+  <div id="backdrop" class="backdrop">
+    <div class="modal">
+      <div class="modalHead">
+        <div id="modalTitle" class="modalTitle"></div>
+        <button id="modalClose" class="btn mini">x</button>
       </div>
-      <div id="modalBody"></div>
-      <div id="modalFoot"></div>
+      <div id="modalBody" class="modalBody"></div>
+      <div id="modalFoot" class="modalFoot"></div>
     </div>
   </div>
 
   <!-- CONTEXT MENU -->
-  <div id="ctx"></div>
+  <div id="ctx" class="ctx"></div>
 
-  <!-- CUSTOM CURSOR -->
-  <div id="trail"></div>
-  <div id="cursor"></div>
-
-  <!-- Socket.IO + client -->
   <script src="/socket.io/socket.io.js"></script>
-  <script src="/script.js"></script>
+  <script src="/public/script.js"></script>
 </body>
 </html>
