@@ -1062,8 +1062,7 @@
   // -----------------------------
   // Initial start
   // -----------------------------
-  (async () => {
-    // if token exists, try auto-boot, else show login
+   (async () => {
     if (state.session.token) {
       try {
         showApp();
@@ -1071,7 +1070,6 @@
         connectSocket();
         return;
       } catch (e) {
-        // token bad; reset
         state.session.token = null;
         state.session.user = null;
         localSet("tk_token", null);
@@ -1083,24 +1081,3 @@
     showLogin();
   })();
 })();
-
-  broadcastOnlineUsers();
-
-  socket.on("disconnect", () => {
-    const entry = onlineByUserId.get(u.id);
-    if (entry) {
-      entry.count -= 1;
-      if (entry.count <= 0) {
-        onlineByUserId.delete(u.id);
-      } else {
-        onlineByUserId.set(u.id, entry);
-      }
-    }
-    broadcastOnlineUsers();
-  });
-});
-
-// -------------------- START --------------------
-server.listen(PORT, () => {
-  console.log(`tonkotsu.online server running on port ${PORT} (${NODE_ENV})`);
-});
