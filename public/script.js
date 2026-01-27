@@ -1,4 +1,4 @@
-(() => {
+F(() => {
   "use strict";
 
   // Prevent double-load (fix duplicate messages/UI)
@@ -331,7 +331,7 @@
 
   async function setPresence(mode) {
     try {
-      await api("/api/presence", { method: "POST", body: { mode } });
+      await api("/api/profile/presence", { method: "POST", body: { mode } });
       setPresenceUi(mode);
       toast.show(`presence: ${mode}`, "ok", 1200);
     } catch (e) {
