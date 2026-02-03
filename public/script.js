@@ -113,9 +113,15 @@ function saveSettings(){
 
 async function get(url){
   const r = await fetch(url, { headers: authHeaders() });
-  const j = await r.json().catch(()=> ({}));
-  if(!r.ok) throw new Error(j.error || 'Request failed');
-  return j;
+  const ct = (r.headers.get('content-type') || '').toLowerCase();
+  const isJson = ct.includes('application/json');
+  const data = isJson ? await r.json().catch(()=> ({})) : { _text: await r.text().catch(()=> '') };
+
+  if(!r.ok){
+    const msg = (data && data.error) ? data.error : `Request failed (${r.status})`;
+    throw new Error(msg);
+  }
+  return data;
 }
 async function post(url, body){
   const r = await fetch(url, {
@@ -123,9 +129,15 @@ async function post(url, body){
     headers: { 'Content-Type':'application/json', ...authHeaders() },
     body: JSON.stringify(body || {})
   });
-  const j = await r.json().catch(()=> ({}));
-  if(!r.ok) throw new Error(j.error || 'Request failed');
-  return j;
+  const ct = (r.headers.get('content-type') || '').toLowerCase();
+  const isJson = ct.includes('application/json');
+  const data = isJson ? await r.json().catch(()=> ({})) : { _text: await r.text().catch(()=> '') };
+
+  if(!r.ok){
+    const msg = (data && data.error) ? data.error : `Request failed (${r.status})`;
+    throw new Error(msg);
+  }
+  return data;
 }
 function authHeaders(){
   return state.token ? { Authorization: 'Bearer ' + state.token } : {};
@@ -235,11 +247,11 @@ function setMe(user){
   state.user = user;
   elMeName.textContent = user ? user.username : 'Not logged in';
   elMeStatus.textContent = user ? (user.statusText || user.bio || (user.isGuest?'Guest':'Online')) : 'Login / Register / Guest';
-  updateMyDot(user?.presence || 'online');
+  updateMyDot(user ? (user.presence || 'online') : 'offline');
   renderHeaderButtons();
 }
 function updateMyDot(pres){
-  const cls = ['online','idle','dnd','invisible'];
+  const cls = ['online','idle','dnd','invisible','offline'];
   for(const c of cls){ elMeDot.classList.remove(c); elMeDot2.classList.remove(c); }
   elMeDot.classList.add(pres || 'online');
   elMeDot2.classList.add(pres || 'online');
@@ -273,9 +285,9 @@ function updateThreadTopbar(thread){
     thread.type==='group' ? 'Group chat • Invites via friends' : 'Chat';
 
   // threadDot color hint
-  const cls = ['online','idle','dnd','invisible'];
+  const cls = ['online','idle','dnd','invisible','offline'];
   for(const c of cls) elThreadDot.classList.remove(c);
-  elThreadDot.classList.add('online');
+  elThreadDot.classList.add(state.user ? 'online' : 'offline');
 
   // group button
   elBtnGroup.style.display = (thread.type==='group') ? '' : 'none';
@@ -595,28 +607,32 @@ function openAuthModal(){
   const u = input('Username (letters/numbers/_ 2-20)', 'text', '');
   const p = input('Password', 'password', '');
   const p2 = input('Confirm password (register)', 'password', '');
-  p2.style.display = 'none';
 
-  modeSel.addEventListener('change', ()=>{
+  const rowMode = labelRow('Mode', modeSel);
+  const rowUser = labelRow('Username', u);
+  const rowPass = labelRow('Password', p);
+  const rowConf = labelRow('Confirm', p2);
+
+  function applyMode(){
     const m = modeSel.value;
-    const show = (m==='register');
-    p2.style.display = show ? '' : 'none';
-    u.style.display = (m==='guest') ? 'none' : '';
-    p.style.display = (m==='guest') ? 'none' : '';
-  });
+    const isGuest = (m === 'guest');
+    const isReg = (m === 'register');
 
-  const body = [
-    labelRow('Mode', modeSel),
-    labelRow('Username', u),
-    labelRow('Password', p),
-    labelRow('Confirm', p2),
-  ];
+    rowUser.style.display = isGuest ? 'none' : '';
+    rowPass.style.display = isGuest ? 'none' : '';
+    rowConf.style.display = isReg ? '' : 'none';
+  }
+  modeSel.addEventListener('change', applyMode);
+  applyMode();
+
+  const body = [rowMode, rowUser, rowPass, rowConf];
 
   const foot = [
     btn('Cancel','btn', closeModal),
     btn('Continue','btn btnPrimary', async ()=>{
       try{
         const m = modeSel.value;
+
         if(m==='guest'){
           showLoading('Creating guest…');
           const r = await API.guest();
@@ -628,10 +644,14 @@ function openAuthModal(){
           closeModal();
           return;
         }
+
         const username = u.value.trim();
         const password = p.value;
+
         if(m==='register'){
+          showLoading('Creating account…');
           const r = await API.register({ username, password, password2: p2.value });
+          hideLoading();
           setToken(r.token);
           setMe(r.user);
           toast('Account created', `Welcome ${r.user.username}`);
@@ -640,8 +660,11 @@ function openAuthModal(){
           showWelcomePopup();
           return;
         }
+
         if(m==='login'){
+          showLoading('Logging in…');
           const r = await API.login({ username, password });
+          hideLoading();
           setToken(r.token);
           setMe(r.user);
           toast('Logged in', r.user.username);
@@ -650,9 +673,8 @@ function openAuthModal(){
           return;
         }
       }catch(e){
-        toast('Auth failed', e.message);
-      }finally{
         hideLoading();
+        toast('Auth failed', e.message);
       }
     })
   ];
