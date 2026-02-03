@@ -1,1190 +1,1168 @@
-/* script.js (Browser ONLY): UI, DOM, Socket.IO client */
-/* global io */
-
 'use strict';
 
+/**
+ * client/script.js — SPA-ish frontend for tonkotsu.online
+ * Features:
+ * - Login / Register (password confirm) / Guest
+ * - Settings modal (presence, status, ping sounds, global ping)
+ * - Profile (bio)
+ * - Threads: Global + DMs + Groups, group creation, invites via DM
+ * - Online list with statuses; idle after 2 min; invisible hides from list
+ * - Friend requests (non-guests) + accept/decline
+ * - Block users: blurred messages + reveal button; blocked cannot DM
+ * - Global chat forbids links (client-side hint; server enforces)
+ * - Dynamic loading screen, toasts, animations
+ * - Cooldown bar with red shake feedback when trying to send during cooldown
+ * - Message dedupe via clientId; timestamps; edit/delete in 60s window
+ */
+
 const $ = (sel) => document.querySelector(sel);
-const el = (tag, cls) => {
-  const e = document.createElement(tag);
-  if (cls) e.className = cls;
-  return e;
+const elThreads = $('#threads');
+const elMessages = $('#messages');
+const elComposer = $('#composer');
+const elSendBtn = $('#sendBtn');
+const elThreadTitle = $('#threadTitle');
+const elThreadSub = $('#threadSub');
+const elThreadDot = $('#threadDot');
+const elMeName = $('#meName');
+const elMeStatus = $('#meStatus');
+const elMeDot = $('#meDot');
+const elMeDot2 = $('#meDot2');
+const elOnlineList = $('#onlineList');
+const elOnlineCount = $('#onlineCount');
+const elLoading = $('#loading');
+const elLoadText = $('#loadText');
+const elBackdrop = $('#backdrop');
+const elModalTitle = $('#modalTitle');
+const elModalBody = $('#modalBody');
+const elModalFoot = $('#modalFoot');
+const elCtx = $('#ctx');
+const elToasts = $('#toasts');
+const elCooldownBar = $('#cooldownBar');
+const elCooldownFill = $('#cooldownFill');
+const elBtnSettings = $('#btnSettings');
+const elBtnProfile = $('#btnProfile');
+const elBtnAuth = $('#btnAuth');
+const elBtnNew = $('#btnNew');
+const elBtnLogout = $('#btnLogout');
+const elBtnAnnounce = $('#btnAnnounce');
+const elBtnGroup = $('#btnGroup');
+const elEnvBadge = $('#envBadge');
+
+const API = {
+  register: (body) => post('/api/register', body),
+  login: (body) => post('/api/login', body),
+  guest: () => post('/api/guest', {}),
+  me: () => get('/api/me'),
+  updateProfile: (body) => post('/api/me/profile', body),
+  threads: () => get('/api/threads'),
+  messages: (threadId) => get(`/api/messages?threadId=${encodeURIComponent(threadId)}&limit=120`),
+  dm: (username) => post('/api/threads/dm', { username }),
+  group: (name) => post('/api/threads/group', { name }),
+  friendReq: (username) => post('/api/friends/request', { username }),
+  friendRespond: (fromId, accept) => post('/api/friends/respond', { fromId, accept }),
+  block: (username) => post('/api/block', { username }),
+  unblock: (username) => post('/api/unblock', { username }),
+  invite: (groupId, userId) => post('/api/groups/invite', { groupId, userId }),
+  inviteRespond: (groupId, inviterId, accept) => post('/api/groups/invite/respond', { groupId, inviterId, accept }),
+  announce: (content) => post('/api/announce', { content }),
 };
 
-const state = {
-  token: null,
-  me: null,
-  socket: null,
-
-  threads: [], // {id,type,name,members,createdAt}
-  activeThreadId: 'global',
-
-  messages: new Map(), // threadId -> [msg]
-  usersById: new Map(), // id -> public user
-  online: [],
-
-  // Unread/mentions counts
-  lastReadAt: new Map(), // threadId -> ms
-  unread: new Map(),     // threadId -> count
-  mentions: new Map(),   // threadId -> count
-
-  // Optimistic sends & retry
-  pending: new Map(),    // clientId -> {threadId, content, createdAt, retries}
-};
-
-const UI = {
-  meDot: $('#meDot'),
-  meDot2: $('#meDot2'),
-  meName: $('#meName'),
-  meStatus: $('#meStatus'),
-  btnProfile: $('#btnProfile'),
-  btnAuth: $('#btnAuth'),
-  btnNew: $('#btnNew'),
-  btnLogout: $('#btnLogout'),
-  btnAnnounce: $('#btnAnnounce'),
-
-  threadsWrap: $('#threads'),
-
-  threadDot: $('#threadDot'),
-  threadTitle: $('#threadTitle'),
-  threadSub: $('#threadSub'),
-
-  messages: $('#messages'),
-  composer: $('#composer'),
-  sendBtn: $('#sendBtn'),
-
-  cooldownBar: $('#cooldownBar'),
-  cooldownFill: $('#cooldownFill'),
-
-  onlineList: $('#onlineList'),
-  onlineCount: $('#onlineCount'),
-
-  backdrop: $('#backdrop'),
-  modal: $('#modal'),
-  modalTitle: $('#modalTitle'),
-  modalBody: $('#modalBody'),
-  modalFoot: $('#modalFoot'),
-  modalClose: $('#modalClose'),
-
-  ctx: $('#ctx'),
-  toasts: $('#toasts'),
-};
-
-function toast(title, detail, ms = 2400) {
-  const t = el('div', 'toast');
-  const b = el('div');
-  b.textContent = title;
-  const s = el('small');
-  s.textContent = detail || '';
-  t.appendChild(b);
-  if (detail) t.appendChild(s);
-  UI.toasts.appendChild(t);
-  setTimeout(() => t.remove(), ms);
-}
-
-function fmtTime(ms) {
-  const d = new Date(ms);
-  const hh = d.getHours().toString().padStart(2, '0');
-  const mm = d.getMinutes().toString().padStart(2, '0');
+function sleep(ms){ return new Promise(r => setTimeout(r, ms)); }
+function now(){ return Date.now(); }
+function fmtTime(ts){
+  const d = new Date(ts);
+  const hh = String(d.getHours()).padStart(2,'0');
+  const mm = String(d.getMinutes()).padStart(2,'0');
   return `${hh}:${mm}`;
 }
+function clamp(n,a,b){ return Math.max(a, Math.min(b,n)); }
 
-function escapeHtml(s) {
-  return s.replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));
+let state = {
+  token: localStorage.getItem('tko_token') || null,
+  user: null,
+  threads: [],
+  activeThreadId: 'global',
+  socket: null,
+  online: [],
+  blockedIds: new Set(),
+  friends: new Set(),
+  friendRequestsIn: new Set(),
+  friendRequestsOut: new Set(),
+  pendingPing: new Map(), // threadId -> count
+  settings: loadSettings(),
+  cooldownUntil: 0,
+  cooldownMs: 0,
+  lastActivityAt: now(),
+  idle: false
+};
+
+function loadSettings(){
+  try{
+    const raw = localStorage.getItem('tko_settings');
+    if(!raw) return { pingDM:true, pingGlobal:false, pingInvite:true, pingFriend:true, volume:0.25, theme:'black' };
+    const s = JSON.parse(raw);
+    return { pingDM:!!s.pingDM, pingGlobal:!!s.pingGlobal, pingInvite:!!s.pingInvite, pingFriend:!!s.pingFriend, volume: Number(s.volume ?? 0.25), theme:'black' };
+  }catch{
+    return { pingDM:true, pingGlobal:false, pingInvite:true, pingFriend:true, volume:0.25, theme:'black' };
+  }
+}
+function saveSettings(){
+  localStorage.setItem('tko_settings', JSON.stringify(state.settings));
 }
 
-function presenceDotClass(p) {
-  return ['online','idle','dnd','invisible'].includes(p) ? p : 'online';
+async function get(url){
+  const r = await fetch(url, { headers: authHeaders() });
+  const j = await r.json().catch(()=> ({}));
+  if(!r.ok) throw new Error(j.error || 'Request failed');
+  return j;
+}
+async function post(url, body){
+  const r = await fetch(url, {
+    method:'POST',
+    headers: { 'Content-Type':'application/json', ...authHeaders() },
+    body: JSON.stringify(body || {})
+  });
+  const j = await r.json().catch(()=> ({}));
+  if(!r.ok) throw new Error(j.error || 'Request failed');
+  return j;
+}
+function authHeaders(){
+  return state.token ? { Authorization: 'Bearer ' + state.token } : {};
 }
 
-function badgeClass(b) {
-  if (b === 'GUEST') return 'miniBadge badgeGuest';
-  if (b === 'BETA') return 'miniBadge badgeBeta';
-  if (b === 'EARLY ACCESS') return 'miniBadge badgeEarly';
-  if (b === 'ANNOUNCEMENT') return 'miniBadge badgeAnn';
-  return 'miniBadge';
+function toast(title, detail=''){
+  const t = document.createElement('div');
+  t.className = 'toast';
+  t.innerHTML = `<div style="font-weight:950">${escapeHtml(title)}</div>${detail?`<small>${escapeHtml(detail)}</small>`:''}`;
+  elToasts.appendChild(t);
+  setTimeout(()=> { t.style.opacity='0'; t.style.transform='translateY(4px)'; }, 2600);
+  setTimeout(()=> t.remove(), 3100);
 }
 
-function saveSession(token, me) {
-  localStorage.setItem('tonkotsu_token', token);
-  localStorage.setItem('tonkotsu_me', JSON.stringify(me));
+function showLoading(txt){
+  elLoadText.textContent = txt || 'Connecting…';
+  elLoading.classList.remove('hide');
+}
+function hideLoading(){
+  elLoading.classList.add('hide');
 }
 
-function loadSession() {
-  const t = localStorage.getItem('tonkotsu_token');
-  const m = localStorage.getItem('tonkotsu_me');
-  if (t && m) {
-    try {
-      state.token = t;
-      state.me = JSON.parse(m);
-    } catch {}
+function openModal(title, bodyNodes, footNodes){
+  elModalTitle.textContent = title;
+  elModalBody.innerHTML = '';
+  elModalFoot.innerHTML = '';
+  for(const n of (bodyNodes||[])) elModalBody.appendChild(n);
+  for(const n of (footNodes||[])) elModalFoot.appendChild(n);
+  elBackdrop.classList.add('show');
+}
+function closeModal(){ elBackdrop.classList.remove('show'); }
+
+$('#modalClose').addEventListener('click', closeModal);
+elBackdrop.addEventListener('click', (e)=> { if(e.target === elBackdrop) closeModal(); });
+
+function btn(text, cls='btn', onClick){
+  const b = document.createElement('button');
+  b.className = cls;
+  b.textContent = text;
+  b.addEventListener('click', onClick);
+  return b;
+}
+function input(placeholder, type='text', value=''){
+  const i = document.createElement('input');
+  i.placeholder = placeholder;
+  i.type = type;
+  i.value = value || '';
+  return i;
+}
+function select(options, value){
+  const s = document.createElement('select');
+  for(const [val,label] of options){
+    const o = document.createElement('option');
+    o.value = val; o.textContent = label;
+    if(val===value) o.selected = true;
+    s.appendChild(o);
+  }
+  return s;
+}
+function labelRow(lbl, control){
+  const row = document.createElement('div'); row.className='row';
+  const l = document.createElement('label'); l.textContent = lbl;
+  row.appendChild(l); row.appendChild(control);
+  return row;
+}
+
+function escapeHtml(s){
+  return String(s||'').replace(/[&<>"']/g, (m)=>({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+  }[m]));
+}
+
+function playPing(type){
+  const s = state.settings;
+  const enabled =
+    (type==='dm' && s.pingDM) ||
+    (type==='invite' && s.pingInvite) ||
+    (type==='friend' && s.pingFriend) ||
+    (type==='global' && s.pingGlobal);
+  if(!enabled) return;
+
+  const ctx = new (window.AudioContext || window.webkitAudioContext)();
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.type = 'sine';
+  const base = (type==='invite')? 660 : (type==='friend')? 620 : (type==='dm')? 540 : 480;
+  const second = base * 1.34;
+  const t0 = ctx.currentTime;
+  gain.gain.setValueAtTime(0.0001, t0);
+  gain.gain.exponentialRampToValueAtTime(Math.max(0.02, s.volume), t0 + 0.01);
+  gain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.22);
+  osc.frequency.setValueAtTime(base, t0);
+  osc.frequency.exponentialRampToValueAtTime(second, t0 + 0.08);
+  osc.connect(gain); gain.connect(ctx.destination);
+  osc.start(t0);
+  osc.stop(t0 + 0.24);
+  osc.onended = ()=> ctx.close().catch(()=>{});
+}
+
+function setToken(token){
+  state.token = token;
+  if(token) localStorage.setItem('tko_token', token);
+  else localStorage.removeItem('tko_token');
+}
+
+function setMe(user){
+  state.user = user;
+  elMeName.textContent = user ? user.username : 'Not logged in';
+  elMeStatus.textContent = user ? (user.statusText || user.bio || (user.isGuest?'Guest':'Online')) : 'Login / Register / Guest';
+  updateMyDot(user?.presence || 'online');
+  renderHeaderButtons();
+}
+function updateMyDot(pres){
+  const cls = ['online','idle','dnd','invisible'];
+  for(const c of cls){ elMeDot.classList.remove(c); elMeDot2.classList.remove(c); }
+  elMeDot.classList.add(pres || 'online');
+  elMeDot2.classList.add(pres || 'online');
+}
+
+function renderHeaderButtons(){
+  const logged = !!state.user;
+  elBtnLogout.style.display = logged ? '' : 'none';
+  elBtnAnnounce.style.display = (logged && state.user.badges && state.user.badges.includes('ANNOUNCEMENT') && !state.user.isGuest) ? '' : 'none';
+}
+
+function setActiveThread(id){
+  state.activeThreadId = id;
+  state.pendingPing.set(id, 0);
+  renderThreads();
+  loadThread(id);
+}
+
+function threadDisplayName(t){
+  if(t.type==='global') return '# global';
+  if(t.type==='dm') return '@ ' + (t.name || 'DM');
+  if(t.type==='group') return '✦ ' + (t.name || 'Group');
+  return t.name || 'Chat';
+}
+
+function updateThreadTopbar(thread){
+  elThreadTitle.textContent = threadDisplayName(thread);
+  elThreadSub.textContent =
+    thread.type==='global' ? 'No links allowed • Cooldown enforced' :
+    thread.type==='dm' ? 'Direct messages • Links allowed' :
+    thread.type==='group' ? 'Group chat • Invites via friends' : 'Chat';
+
+  // threadDot color hint
+  const cls = ['online','idle','dnd','invisible'];
+  for(const c of cls) elThreadDot.classList.remove(c);
+  elThreadDot.classList.add('online');
+
+  // group button
+  elBtnGroup.style.display = (thread.type==='group') ? '' : 'none';
+}
+
+function renderThreads(){
+  elThreads.innerHTML = '';
+  const threads = state.threads.slice().sort((a,b)=>{
+    if(a.id==='global') return -1;
+    if(b.id==='global') return 1;
+    if(a.type!==b.type) return (a.type==='dm'?-1:1);
+    return (a.name||'').localeCompare(b.name||'');
+  });
+
+  for(const t of threads){
+    const row = document.createElement('div');
+    row.className = 'thread' + (t.id===state.activeThreadId ? ' active':'');
+
+    const name = document.createElement('div');
+    name.className = 'threadName';
+    name.textContent = threadDisplayName(t);
+
+    const ping = document.createElement('div');
+    ping.className = 'ping';
+    const cnt = state.pendingPing.get(t.id) || 0;
+    if(cnt>0){ ping.classList.add('show'); ping.textContent = String(cnt); }
+
+    row.appendChild(name);
+    row.appendChild(ping);
+
+    row.addEventListener('click', ()=> setActiveThread(t.id));
+    elThreads.appendChild(row);
   }
 }
 
-function clearSession() {
-  localStorage.removeItem('tonkotsu_token');
-  localStorage.removeItem('tonkotsu_me');
-  state.token = null;
-  state.me = null;
+function scrollToBottom(){
+  elMessages.scrollTop = elMessages.scrollHeight;
 }
 
-async function api(path, opts = {}) {
-  const headers = opts.headers || {};
-  headers['Content-Type'] = 'application/json';
-  if (state.token) headers['Authorization'] = 'Bearer ' + state.token;
-  const res = await fetch(path, { ...opts, headers });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    const msg = data.error || `HTTP ${res.status}`;
-    throw new Error(msg);
+function messageKey(m){ return m.senderId + '|' + (m.clientId || m.id); }
+
+const messageIndex = new Map(); // key -> messageId
+function renderMessages(msgs){
+  elMessages.innerHTML = '';
+  messageIndex.clear();
+
+  for(const m of msgs){
+    addMessageToUI(m, true);
   }
-  return data;
+  setTimeout(scrollToBottom, 0);
 }
 
-function openModal(title, bodyNodes, footNodes) {
-  UI.modalTitle.textContent = title;
-  UI.modalBody.innerHTML = '';
-  UI.modalFoot.innerHTML = '';
-  (bodyNodes || []).forEach(n => UI.modalBody.appendChild(n));
-  (footNodes || []).forEach(n => UI.modalFoot.appendChild(n));
-  UI.backdrop.classList.add('show');
+function isBlockedMessage(m){
+  return state.blockedIds.has(m.senderId);
 }
 
-function closeModal() {
-  UI.backdrop.classList.remove('show');
-}
+function addMessageToUI(m, initial=false){
+  const key = messageKey(m);
+  if(messageIndex.has(key)) return; // client-side dedupe (extra)
+  messageIndex.set(key, m.id);
 
-UI.modalClose.addEventListener('click', closeModal);
-UI.backdrop.addEventListener('click', (e) => {
-  if (e.target === UI.backdrop) closeModal();
-});
+  const wrap = document.createElement('div');
+  wrap.className = 'msg';
 
-function hideCtx() {
-  UI.ctx.classList.remove('show');
-  UI.ctx.innerHTML = '';
-}
-document.addEventListener('click', () => hideCtx());
-document.addEventListener('contextmenu', (e) => {
-  if (!e.target.closest('.msg')) hideCtx();
-});
+  if(m.type==='announcement') wrap.classList.add('announcement');
+  if(isBlockedMessage(m)) wrap.classList.add('blocked');
 
-function showCtx(x, y, items) {
-  UI.ctx.innerHTML = '';
-  items.forEach(it => {
-    const row = el('div', 'ctxItem' + (it.danger ? ' danger' : ''));
-    row.textContent = it.label;
-    row.addEventListener('click', () => {
-      hideCtx();
-      it.onClick();
+  wrap.dataset.mid = m.id;
+
+  const left = document.createElement('div');
+  left.style.width = '8px';
+  left.style.borderRadius = '999px';
+  left.style.background = m.senderColor || '#777';
+  left.style.marginTop = '3px';
+
+  const col = document.createElement('div');
+  col.className = 'msgCol';
+
+  const hdr = document.createElement('div');
+  hdr.className = 'msgHdr';
+
+  const nm = document.createElement('div');
+  nm.className = 'msgName';
+  nm.textContent = m.senderName || 'user';
+  nm.style.color = m.senderColor || '';
+  nm.addEventListener('contextmenu', (e)=> userContextMenu(e, { id:m.senderId, username:m.senderName }));
+
+  const time = document.createElement('div');
+  time.className = 'msgTime';
+  time.textContent = fmtTime(m.createdAt) + (m.editedAt ? ' (edited)' : '');
+
+  hdr.appendChild(nm);
+  hdr.appendChild(time);
+
+  const body = document.createElement('div');
+  body.className = 'msgBody';
+  body.textContent = m.deletedAt ? '[deleted]' : (m.content || '');
+
+  col.appendChild(hdr);
+  col.appendChild(body);
+
+  // system/invite/friend_request
+  if(m.type==='invite' && m.meta && m.meta.groupId){
+    const card = document.createElement('div'); card.className='cardInline';
+    const lefttxt = document.createElement('div');
+    lefttxt.innerHTML = `<div style="font-weight:950">Group invite</div><div style="color:var(--muted);font-size:12px">Join “${escapeHtml(m.meta.groupName||'group')}”</div>`;
+    const rightbtns = document.createElement('div'); rightbtns.style.display='flex'; rightbtns.style.gap='8px';
+    const accept = btn('Accept','btn btnPrimary', async ()=>{
+      try{
+        await API.inviteRespond(m.meta.groupId, m.meta.inviterId, true);
+        toast('Joined group', m.meta.groupName);
+        await refreshThreads();
+      }catch(e){ toast('Invite failed', e.message); }
     });
-    UI.ctx.appendChild(row);
-  });
-  UI.ctx.style.left = x + 'px';
-  UI.ctx.style.top = y + 'px';
-  UI.ctx.classList.add('show');
+    const decline = btn('Decline','btn', async ()=>{
+      try{
+        await API.inviteRespond(m.meta.groupId, m.meta.inviterId, false);
+        toast('Invite declined');
+      }catch(e){ toast('Invite failed', e.message); }
+    });
+    rightbtns.appendChild(accept); rightbtns.appendChild(decline);
+    card.appendChild(lefttxt); card.appendChild(rightbtns);
+    col.appendChild(card);
+  }
+
+  if(m.type==='friend_request' && m.meta && m.meta.fromId){
+    const card = document.createElement('div'); card.className='cardInline';
+    const lefttxt = document.createElement('div');
+    lefttxt.innerHTML = `<div style="font-weight:950">Friend request</div><div style="color:var(--muted);font-size:12px">From ${escapeHtml(m.senderName||'user')}</div>`;
+    const rightbtns = document.createElement('div'); rightbtns.style.display='flex'; rightbtns.style.gap='8px';
+    const accept = btn('Accept','btn btnPrimary', async ()=>{
+      try{
+        await API.friendRespond(m.meta.fromId, true);
+        toast('Friend added');
+        await refreshMe();
+      }catch(e){ toast('Failed', e.message); }
+    });
+    const decline = btn('Decline','btn', async ()=>{
+      try{
+        await API.friendRespond(m.meta.fromId, false);
+        toast('Declined');
+        await refreshMe();
+      }catch(e){ toast('Failed', e.message); }
+    });
+    rightbtns.appendChild(accept); rightbtns.appendChild(decline);
+    card.appendChild(lefttxt); card.appendChild(rightbtns);
+    col.appendChild(card);
+  }
+
+  wrap.appendChild(left);
+  wrap.appendChild(col);
+
+  if(isBlockedMessage(m) && !m.deletedAt){
+    // enable reveal
+    wrap.style.pointerEvents = '';
+    const rb = document.createElement('button');
+    rb.className = 'revealBtn';
+    rb.textContent = 'Reveal';
+    rb.addEventListener('click', ()=>{
+      wrap.classList.remove('blocked');
+      rb.remove();
+    });
+    wrap.appendChild(rb);
+  }
+
+  // message actions (edit/delete) — only your messages within 60s
+  if(state.user && m.senderId === state.user.id && !m.deletedAt){
+    wrap.addEventListener('dblclick', ()=> openEditMessage(m));
+  }
+
+  elMessages.appendChild(wrap);
+  if(!initial) scrollToBottom();
 }
 
-// ---------- Auth & bootstrap ----------
-
-async function ensureMe() {
-  if (!state.token) return false;
-  try {
-    const data = await api('/api/me');
-    state.me = data.user;
-    saveSession(state.token, state.me);
-    return true;
-  } catch {
-    clearSession();
-    return false;
+function updateMessageUIEdit(messageId, content, editedAt){
+  const el = elMessages.querySelector(`[data-mid="${CSS.escape(messageId)}"]`);
+  if(!el) return;
+  const body = el.querySelector('.msgBody');
+  const time = el.querySelector('.msgTime');
+  if(body) body.textContent = content;
+  if(time){
+    // preserve hh:mm from dataset? easiest: show edited
+    time.textContent = time.textContent.replace(' (edited)','') + ' (edited)';
   }
 }
 
-function renderMe() {
-  const me = state.me;
-  if (!me) {
-    UI.meName.textContent = 'Not logged in';
-    UI.meStatus.textContent = 'Login or continue as guest';
-    UI.btnLogout.style.display = 'none';
-    UI.btnAnnounce.style.display = 'none';
-    setDot(UI.meDot, 'invisible');
-    setDot(UI.meDot2, 'invisible');
-    return;
+function updateMessageUIDelete(messageId){
+  const el = elMessages.querySelector(`[data-mid="${CSS.escape(messageId)}"]`);
+  if(!el) return;
+  const body = el.querySelector('.msgBody');
+  if(body) body.textContent = '[deleted]';
+}
+
+async function loadThread(threadId){
+  try{
+    const thread = state.threads.find(t => t.id===threadId) || { id:'global', type:'global', name:'Global' };
+    updateThreadTopbar(thread);
+
+    showLoading('Loading messages…');
+    const data = await API.messages(threadId);
+    hideLoading();
+
+    renderMessages(data.messages || []);
+    ensureJoined(threadId);
+
+    // clear ping for this thread
+    state.pendingPing.set(threadId, 0);
+    renderThreads();
+  }catch(e){
+    hideLoading();
+    toast('Failed to load', e.message);
   }
-
-  UI.meName.textContent = me.username;
-  UI.meStatus.textContent = me.statusText || (me.isGuest ? 'Guest' : 'Online');
-
-  UI.btnLogout.style.display = 'inline-flex';
-  UI.btnAnnounce.style.display = me.badges && me.badges.includes('ANNOUNCEMENT') ? 'inline-flex' : 'none';
-  setDot(UI.meDot, me.presence);
-  setDot(UI.meDot2, me.presence);
 }
 
-function setDot(node, presence) {
-  node.classList.remove('online','idle','dnd','invisible');
-  node.classList.add(presenceDotClass(presence));
-}
-
-// ---------- Threads & unread ----------
-
-function resetUnread(threadId) {
-  state.unread.set(threadId, 0);
-  state.mentions.set(threadId, 0);
-  state.lastReadAt.set(threadId, Date.now());
-  renderThreads();
-}
-
-function bumpUnread(threadId, isMention) {
-  if (threadId === state.activeThreadId) return;
-  state.unread.set(threadId, (state.unread.get(threadId) || 0) + 1);
-  if (isMention) state.mentions.set(threadId, (state.mentions.get(threadId) || 0) + 1);
-  renderThreads();
-}
-
-function threadPingCount(threadId) {
-  const m = state.mentions.get(threadId) || 0;
-  const u = state.unread.get(threadId) || 0;
-  // Mentions dominate as red ping; show total (compact)
-  return m > 0 ? m : u;
-}
-
-function renderThreads() {
-  UI.threadsWrap.innerHTML = '';
-  const threads = state.threads.slice().sort((a,b) => {
-    // Global first, then groups, then dms, then alpha
-    const rank = (t) => t.id === 'global' ? 0 : (t.type === 'group' ? 1 : 2);
-    const ra = rank(a), rb = rank(b);
-    if (ra !== rb) return ra - rb;
-    return a.name.localeCompare(b.name);
+function ensureJoined(threadId){
+  if(!state.socket) return;
+  state.socket.emit('thread:join', { threadId }, (resp)=>{
+    if(resp && !resp.ok) toast('Join failed', resp.error || 'forbidden');
   });
+}
 
-  threads.forEach(t => {
-    const row = el('div', 'thread' + (t.id === state.activeThreadId ? ' active' : ''));
-    const dot = el('div', 'dot ' + presenceDotClass(threadDotPresence(t)));
-    dot.style.width = '9px';
-    dot.style.height = '9px';
+function userContextMenu(e, user){
+  e.preventDefault();
+  if(!user || !user.username) return;
+  hideCtx();
 
-    const name = el('div', 'threadName');
-    name.textContent = t.id === 'global' ? '# global' : (t.type === 'group' ? '⛓ ' + t.name : '@ ' + t.name);
-
-    const meta = el('div', 'threadMeta');
-    const ping = el('div', 'ping');
-    const count = threadPingCount(t.id);
-    if (count > 0) {
-      ping.textContent = String(Math.min(99, count));
-      ping.classList.add('show');
+  const items = [];
+  if(state.user && !state.user.isGuest && user.username !== state.user.username){
+    if(!state.friends.has(user.id)){
+      items.push({ label:'Add friend', fn: ()=> sendFriendRequest(user.username) });
     }
-    meta.appendChild(ping);
+    items.push({ label:'Block', danger:true, fn: ()=> blockUser(user.username) });
+    items.push({ label:'DM', fn: ()=> openDM(user.username) });
+  }
+  if(items.length===0) return;
+
+  elCtx.innerHTML = '';
+  for(const it of items){
+    const div = document.createElement('div');
+    div.className = 'ctxItem' + (it.danger?' danger':'');
+    div.textContent = it.label;
+    div.addEventListener('click', ()=>{ hideCtx(); it.fn(); });
+    elCtx.appendChild(div);
+  }
+  elCtx.style.left = clamp(e.clientX, 8, window.innerWidth - 220) + 'px';
+  elCtx.style.top = clamp(e.clientY, 8, window.innerHeight - 120) + 'px';
+  elCtx.classList.add('show');
+}
+
+function hideCtx(){ elCtx.classList.remove('show'); }
+window.addEventListener('click', hideCtx);
+window.addEventListener('scroll', hideCtx, true);
+
+async function openDM(username){
+  try{
+    if(state.user?.isGuest) return toast('Guests cannot DM');
+    const r = await API.dm(username);
+    await refreshThreads();
+    setActiveThread(r.threadId);
+  }catch(e){ toast('DM failed', e.message); }
+}
+
+async function sendFriendRequest(username){
+  try{
+    if(state.user?.isGuest) return toast('Guests cannot add friends');
+    await API.friendReq(username);
+    toast('Friend request sent', username);
+    await refreshMe();
+    // open dm automatically
+    await openDM(username);
+    playPing('friend');
+  }catch(e){ toast('Friend request failed', e.message); }
+}
+
+async function blockUser(username){
+  try{
+    await API.block(username);
+    toast('Blocked', username);
+    await refreshMe();
+  }catch(e){ toast('Block failed', e.message); }
+}
+
+function openEditMessage(m){
+  // only within 60s
+  if(now() - m.createdAt > 60_000) return toast('Edit expired','Only within 60 seconds.');
+  const ta = document.createElement('textarea');
+  ta.value = m.content || '';
+  ta.style.minHeight = '120px';
+
+  const body = [labelRow('Edit', ta)];
+  const foot = [
+    btn('Cancel','btn', closeModal),
+    btn('Delete','btn btnDanger', async ()=>{
+      try{
+        state.socket.emit('message:delete', { messageId: m.id }, (resp)=>{
+          if(resp && resp.ok) { toast('Deleted'); closeModal(); }
+          else toast('Delete failed', resp?.error || 'error');
+        });
+      }catch(e){ toast('Delete failed', e.message); }
+    }),
+    btn('Save','btn btnPrimary', async ()=>{
+      const content = ta.value.trim();
+      if(!content) return toast('Empty','Write something.');
+      state.socket.emit('message:edit', { messageId: m.id, content }, (resp)=>{
+        if(resp && resp.ok) { toast('Edited'); closeModal(); }
+        else toast('Edit failed', resp?.error || 'error');
+      });
+    })
+  ];
+  openModal('Edit message', body, foot);
+  setTimeout(()=> ta.focus(), 20);
+}
+
+// Auth modal
+function openAuthModal(){
+  const modeSel = select([['login','Login'],['register','Register'],['guest','Guest']], 'login');
+  const u = input('Username (letters/numbers/_ 2-20)', 'text', '');
+  const p = input('Password', 'password', '');
+  const p2 = input('Confirm password (register)', 'password', '');
+  p2.style.display = 'none';
+
+  modeSel.addEventListener('change', ()=>{
+    const m = modeSel.value;
+    const show = (m==='register');
+    p2.style.display = show ? '' : 'none';
+    u.style.display = (m==='guest') ? 'none' : '';
+    p.style.display = (m==='guest') ? 'none' : '';
+  });
+
+  const body = [
+    labelRow('Mode', modeSel),
+    labelRow('Username', u),
+    labelRow('Password', p),
+    labelRow('Confirm', p2),
+  ];
+
+  const foot = [
+    btn('Cancel','btn', closeModal),
+    btn('Continue','btn btnPrimary', async ()=>{
+      try{
+        const m = modeSel.value;
+        if(m==='guest'){
+          showLoading('Creating guest…');
+          const r = await API.guest();
+          hideLoading();
+          setToken(r.token);
+          setMe(r.user);
+          toast('Welcome', `Signed in as ${r.user.username}`);
+          await afterLogin();
+          closeModal();
+          return;
+        }
+        const username = u.value.trim();
+        const password = p.value;
+        if(m==='register'){
+          const r = await API.register({ username, password, password2: p2.value });
+          setToken(r.token);
+          setMe(r.user);
+          toast('Account created', `Welcome ${r.user.username}`);
+          closeModal();
+          await afterLogin();
+          showWelcomePopup();
+          return;
+        }
+        if(m==='login'){
+          const r = await API.login({ username, password });
+          setToken(r.token);
+          setMe(r.user);
+          toast('Logged in', r.user.username);
+          closeModal();
+          await afterLogin();
+          return;
+        }
+      }catch(e){
+        toast('Auth failed', e.message);
+      }finally{
+        hideLoading();
+      }
+    })
+  ];
+
+  openModal('Authenticate', body, foot);
+}
+
+function showWelcomePopup(){
+  const seenKey = 'tko_seen_welcome_' + (state.user?.id || '');
+  if(localStorage.getItem(seenKey)) return;
+  localStorage.setItem(seenKey,'1');
+
+  const p = document.createElement('div');
+  p.innerHTML = `
+    <div style="font-weight:950;font-size:18px;margin-bottom:8px">Welcome to tonkotsu.online</div>
+    <div style="color:var(--muted);line-height:1.35">
+      This website is currently in <b>BETA</b>. Things may break, reset, or change quickly.<br><br>
+      If you find issues, DM <b>fishy_x1</b> on Discord or open an issue as <b>fishyramen</b> on GitHub.
+    </div>`;
+  openModal('Beta notice', [p], [btn('Got it','btn btnPrimary', closeModal)]);
+}
+
+function openSettings(){
+  if(!state.user) return openAuthModal();
+
+  const presence = select([['online','Online'],['idle','Idle'],['dnd','Do Not Disturb'],['invisible','Invisible']], state.user.presence || 'online');
+  const statusText = input('Status message (shown in online list)', 'text', state.user.statusText || '');
+
+  const pingDM = document.createElement('input'); pingDM.type='checkbox'; pingDM.checked=!!state.settings.pingDM;
+  const pingInv = document.createElement('input'); pingInv.type='checkbox'; pingInv.checked=!!state.settings.pingInvite;
+  const pingFr = document.createElement('input'); pingFr.type='checkbox'; pingFr.checked=!!state.settings.pingFriend;
+  const pingGl = document.createElement('input'); pingGl.type='checkbox'; pingGl.checked=!!state.settings.pingGlobal;
+
+  const vol = document.createElement('input'); vol.type='range'; vol.min='0'; vol.max='1'; vol.step='0.01'; vol.value=String(state.settings.volume ?? 0.25);
+  const test = btn('Test ping','btn', ()=> playPing('dm'));
+
+  function rowChk(lbl, chk){
+    const row = document.createElement('div'); row.className='row';
+    const l = document.createElement('label'); l.textContent = lbl;
+    const wrap = document.createElement('div'); wrap.style.display='flex'; wrap.style.alignItems='center'; wrap.style.gap='10px';
+    wrap.appendChild(chk);
+    row.appendChild(l); row.appendChild(wrap);
+    return row;
+  }
+
+  const body = [
+    labelRow('Presence', presence),
+    labelRow('Status', statusText),
+    rowChk('Ping DM', pingDM),
+    rowChk('Ping Invite', pingInv),
+    rowChk('Ping Friend', pingFr),
+    rowChk('Ping Global', pingGl),
+    labelRow('Volume', vol),
+    test
+  ];
+
+  const foot = [
+    btn('Cancel','btn', closeModal),
+    btn('Save','btn btnPrimary', async ()=>{
+      try{
+        // save client settings
+        state.settings.pingDM = pingDM.checked;
+        state.settings.pingInvite = pingInv.checked;
+        state.settings.pingFriend = pingFr.checked;
+        state.settings.pingGlobal = pingGl.checked;
+        state.settings.volume = Number(vol.value);
+        saveSettings();
+
+        // save server profile
+        const r = await API.updateProfile({ presence: presence.value, statusText: statusText.value });
+        setMe(r.user);
+        toast('Saved');
+        closeModal();
+      }catch(e){ toast('Save failed', e.message); }
+    })
+  ];
+
+  openModal('Settings', body, foot);
+}
+
+function openProfile(){
+  if(!state.user) return openAuthModal();
+  const bio = document.createElement('textarea');
+  bio.value = state.user.bio || '';
+  const body = [labelRow('Bio', bio)];
+  const foot = [
+    btn('Cancel','btn', closeModal),
+    btn('Save','btn btnPrimary', async ()=>{
+      try{
+        const r = await API.updateProfile({ bio: bio.value });
+        setMe(r.user);
+        toast('Updated profile');
+        closeModal();
+      }catch(e){ toast('Failed', e.message); }
+    })
+  ];
+  openModal('Profile', body, foot);
+}
+
+function openNewChat(){
+  if(!state.user) return openAuthModal();
+  if(state.user.isGuest) return toast('Guests limited','Register to use DMs, friends, groups.');
+
+  const modeSel = select([['dm','New DM'],['group','New Group']], 'dm');
+  const a = input('Username (DM) or Group name','text','');
+
+  const body = [labelRow('Type', modeSel), labelRow('Target', a)];
+  const foot = [
+    btn('Cancel','btn', closeModal),
+    btn('Create','btn btnPrimary', async ()=>{
+      try{
+        if(modeSel.value==='dm'){
+          const r = await API.dm(a.value.trim());
+          await refreshThreads();
+          setActiveThread(r.threadId);
+          closeModal();
+        }else{
+          const r = await API.group(a.value.trim());
+          await refreshThreads();
+          setActiveThread(r.threadId);
+          closeModal();
+        }
+      }catch(e){ toast('Failed', e.message); }
+    })
+  ];
+  openModal('Create chat', body, foot);
+}
+
+function openGroupSettings(){
+  const t = state.threads.find(x => x.id === state.activeThreadId);
+  if(!t || t.type!=='group') return;
+
+  const isOwner = t.roles && state.user && t.roles[state.user.id] === 'owner';
+  const body = [];
+  const info = document.createElement('div');
+  info.style.color='var(--muted)';
+  info.innerHTML = `<div style="font-weight:950;color:var(--text);margin-bottom:6px">Group: ${escapeHtml(t.name)}</div>
+    <div>Owner can invite friends. (members vs owners permissions are stored in server roles).</div>`;
+  body.push(info);
+
+  if(isOwner){
+    // invite friend
+    const sel = document.createElement('select');
+    const friends = state.online
+      .filter(o => state.friends.has(o.user.id))
+      .map(o => o.user)
+      .sort((a,b)=>a.username.localeCompare(b.username));
+    const opt0 = document.createElement('option'); opt0.value=''; opt0.textContent='Select friend...'; sel.appendChild(opt0);
+    for(const u of friends){
+      const o = document.createElement('option');
+      o.value = u.id; o.textContent = u.username;
+      sel.appendChild(o);
+    }
+    body.push(labelRow('Invite', sel));
+    body.push(btn('Send invite','btn btnPrimary', async ()=>{
+      try{
+        if(!sel.value) return toast('Pick a friend');
+        await API.invite(t.id, sel.value);
+        toast('Invite sent');
+        playPing('invite');
+      }catch(e){ toast('Invite failed', e.message); }
+    }));
+  }
+
+  const foot = [btn('Close','btn', closeModal)];
+  openModal('Group settings', body, foot);
+}
+
+async function refreshThreads(){
+  const r = await API.threads();
+  state.threads = r.threads || [];
+  // ensure global exists
+  if(!state.threads.some(t=>t.id==='global')) state.threads.unshift({id:'global',type:'global',name:'Global'});
+  renderThreads();
+}
+
+async function refreshMe(){
+  const r = await API.me();
+  setMe(r.user);
+  state.blockedIds = new Set(r.blocked || []);
+  state.friends = new Set(r.friends || []);
+  state.friendRequestsIn = new Set(r.friendRequestsIn || []);
+  state.friendRequestsOut = new Set(r.friendRequestsOut || []);
+}
+
+function connectSocket(){
+  if(!state.token) return;
+  const socket = io({ auth: { token: state.token } });
+  state.socket = socket;
+
+  socket.on('connect', ()=>{
+    hideLoading();
+    toast('Connected');
+    // join active and global
+    ensureJoined('global');
+    ensureJoined(state.activeThreadId || 'global');
+  });
+
+  socket.on('connect_error', (err)=>{
+    showLoading('Connection failed…');
+    toast('Socket error', err?.message || 'error');
+  });
+
+  socket.on('presence:list', (payload)=>{
+    state.online = payload.users || [];
+    renderOnline();
+  });
+
+  socket.on('presence:update', (payload)=>{
+    const u = payload.user;
+    if(!u) return;
+    if(state.user && u.id === state.user.id){
+      // if our presence updated elsewhere
+      setMe({ ...state.user, presence: u.presence });
+    }
+  });
+
+  socket.on('message:new', (payload)=>{
+    const m = payload.message;
+    if(!m) return;
+
+    // ping counters for inactive threads
+    if(m.threadId !== state.activeThreadId){
+      const cur = state.pendingPing.get(m.threadId) || 0;
+      state.pendingPing.set(m.threadId, cur + 1);
+      renderThreads();
+      if(m.type==='invite') playPing('invite');
+      else if(m.type==='friend_request') playPing('friend');
+      else if(m.threadId==='global') playPing('global');
+      else playPing('dm');
+    }else{
+      // active thread: render
+      addMessageToUI(m);
+      if(m.type==='invite') playPing('invite');
+      else if(m.type==='friend_request') playPing('friend');
+      else if(m.threadId==='global') playPing('global');
+      else playPing('dm');
+    }
+  });
+
+  socket.on('message:edit', (payload)=>{
+    if(!payload) return;
+    updateMessageUIEdit(payload.messageId, payload.content, payload.editedAt);
+  });
+
+  socket.on('message:delete', (payload)=>{
+    if(!payload) return;
+    updateMessageUIDelete(payload.messageId);
+  });
+}
+
+function renderOnline(){
+  elOnlineList.innerHTML = '';
+  elOnlineCount.textContent = String(state.online.length || 0);
+
+  for(const entry of state.online){
+    const u = entry.user;
+    if(!u) continue;
+    const row = document.createElement('div');
+    row.className = 'userRow';
+    row.addEventListener('contextmenu', (e)=> userContextMenu(e, u));
+    row.addEventListener('click', ()=> {
+      // click open dm
+      if(state.user && !state.user.isGuest && u.id !== state.user.id) openDM(u.username);
+    });
+
+    const dot = document.createElement('div');
+    dot.className = 'dot ' + (u.presence || 'online');
+
+    const meta = document.createElement('div');
+    meta.className = 'userMeta';
+    const name = document.createElement('div');
+    name.className = 'userName';
+    name.innerHTML = `<span style="color:${escapeHtml(u.color||'#999')}">${escapeHtml(u.username)}</span>`;
+    const st = document.createElement('div');
+    st.className = 'userStatus';
+    st.textContent = u.statusText || (u.presence || 'online');
+
+    const badges = document.createElement('div'); badges.className='badgeRow';
+    for(const b of (u.badges||[])){
+      const s = document.createElement('span'); s.className='miniBadge';
+      if(b==='GUEST') s.classList.add('badgeGuest');
+      if(b==='BETA') s.classList.add('badgeBeta');
+      if(b==='EARLY ACCESS') s.classList.add('badgeEarly');
+      if(b==='ANNOUNCEMENT') s.classList.add('badgeAnn');
+      s.textContent = b;
+      badges.appendChild(s);
+    }
+
+    meta.appendChild(name);
+    meta.appendChild(st);
+    if((u.badges||[]).length) meta.appendChild(badges);
 
     row.appendChild(dot);
-    row.appendChild(name);
     row.appendChild(meta);
-
-    row.addEventListener('click', () => openThread(t.id));
-
-    UI.threadsWrap.appendChild(row);
-  });
-}
-
-function threadDotPresence(thread) {
-  if (thread.id === 'global' || thread.type === 'group') return 'online';
-  // DM: show other user's presence if known
-  const other = state.threads.find(t => t.id === thread.id);
-  const name = other ? other.name : '';
-  const user = Array.from(state.usersById.values()).find(u => u.username === name);
-  return user ? user.presence : 'online';
-}
-
-async function refreshThreads() {
-  const data = await api('/api/threads');
-  state.threads = data.threads || [];
-  // Ensure global exists for UI
-  if (!state.threads.find(t => t.id === 'global')) {
-    state.threads.unshift({ id:'global', type:'global', name:'Global', members:[], createdAt: Date.now() });
-  }
-  // init unread maps
-  for (const t of state.threads) {
-    if (!state.lastReadAt.has(t.id)) state.lastReadAt.set(t.id, 0);
-    if (!state.unread.has(t.id)) state.unread.set(t.id, 0);
-    if (!state.mentions.has(t.id)) state.mentions.set(t.id, 0);
-  }
-  renderThreads();
-}
-
-// ---------- Messages ----------
-
-function ensureThreadMessages(threadId) {
-  if (!state.messages.has(threadId)) state.messages.set(threadId, []);
-  return state.messages.get(threadId);
-}
-
-function isMentionToMe(content) {
-  const me = state.me;
-  if (!me) return false;
-  const uname = me.username.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const re = new RegExp(`(^|\\s)@${uname}(\\b|\\s)`, 'i');
-  return re.test(content);
-}
-
-function renderMessages(threadId) {
-  const list = ensureThreadMessages(threadId);
-  UI.messages.innerHTML = '';
-
-  list.forEach(m => {
-    const msg = el('div', 'msg');
-    msg.dataset.id = m.id;
-
-    if (m.type === 'announcement') msg.classList.add('announcement');
-
-    const mention = isMentionToMe(m.content || '');
-    if (mention) msg.classList.add('mention');
-
-    const col = el('div', 'msgCol');
-    const hdr = el('div', 'msgHdr');
-
-    const name = el('div', 'msgName');
-    name.textContent = m.senderName || 'Unknown';
-    name.title = 'View profile';
-    name.addEventListener('click', () => openProfileByName(m.senderName));
-
-    const time = el('div', 'msgTime');
-    time.textContent = fmtTime(m.createdAt);
-
-    hdr.appendChild(name);
-    hdr.appendChild(time);
-
-    const body = el('div', 'msgBody');
-    if (m.deletedAt) {
-      body.innerHTML = `<span style="color:var(--muted)">(deleted)</span>`;
-    } else {
-      body.innerHTML = escapeHtml(m.content || '');
-    }
-
-    col.appendChild(hdr);
-    col.appendChild(body);
-
-    if (m.editedAt) {
-      const note = el('div', 'msgNote');
-      note.textContent = '(edited)';
-      col.appendChild(note);
-    }
-
-    msg.appendChild(col);
-
-    // Context menu for my messages
-    msg.addEventListener('contextmenu', (e) => {
-      e.preventDefault();
-      hideCtx();
-      if (!state.me) return;
-      if (m.senderId !== state.me.id) return;
-      if (m.deletedAt) return;
-
-      const canEdit = Date.now() - m.createdAt <= 60 * 1000;
-      const items = [];
-      if (canEdit) items.push({ label: 'Edit', onClick: () => openEditMessage(m) });
-      if (canEdit) items.push({ label: 'Delete', danger: true, onClick: () => deleteMessage(m) });
-      if (!items.length) return;
-      showCtx(e.clientX, e.clientY, items);
-    });
-
-    UI.messages.appendChild(msg);
-  });
-
-  UI.messages.scrollTop = UI.messages.scrollHeight;
-}
-
-async function loadMessages(threadId) {
-  const data = await api('/api/messages?threadId=' + encodeURIComponent(threadId) + '&limit=120');
-  const msgs = data.messages || [];
-  state.messages.set(threadId, msgs);
-  renderMessages(threadId);
-}
-
-// ---------- Thread switching ----------
-
-async function openThread(threadId) {
-  state.activeThreadId = threadId;
-
-  const t = state.threads.find(x => x.id === threadId) || { id: threadId, name: 'Chat', type: 'global' };
-  UI.threadTitle.textContent = t.id === 'global' ? '# global' : t.name;
-  UI.threadSub.textContent = t.type === 'group' ? 'Group chat' : (t.type === 'dm' ? 'Direct message' : 'Global chat');
-
-  setDot(UI.threadDot, threadDotPresence(t));
-
-  // Join room
-  if (state.socket) {
-    state.socket.emit('thread:join', { threadId }, (ack) => {
-      if (!ack || !ack.ok) toast('Could not join', ack?.error || 'error');
-    });
-  }
-
-  await loadMessages(threadId);
-  resetUnread(threadId);
-  renderThreads();
-}
-
-// ---------- Sending & cooldown bar ----------
-
-function autoGrowTextarea() {
-  UI.composer.style.height = 'auto';
-  UI.composer.style.height = Math.min(140, UI.composer.scrollHeight) + 'px';
-}
-UI.composer.addEventListener('input', autoGrowTextarea);
-
-function startCooldownBar(ms) {
-  UI.cooldownBar.classList.add('show');
-  const start = performance.now();
-  function tick(now) {
-    const t = Math.min(1, (now - start) / ms);
-    UI.cooldownFill.style.width = `${Math.floor(100 * t)}%`;
-    if (t < 1) requestAnimationFrame(tick);
-    else {
-      UI.cooldownBar.classList.remove('show');
-      UI.cooldownFill.style.width = '0%';
-    }
-  }
-  requestAnimationFrame(tick);
-}
-
-function newClientId() {
-  return 'c_' + Math.random().toString(16).slice(2) + Date.now().toString(16);
-}
-
-function pushOptimistic(threadId, content, clientId) {
-  const list = ensureThreadMessages(threadId);
-  const tmp = {
-    id: 'pending:' + clientId,
-    threadId,
-    senderId: state.me.id,
-    senderName: state.me.username,
-    content,
-    createdAt: Date.now(),
-    editedAt: null,
-    deletedAt: null,
-    type: 'message',
-    _pending: true,
-    clientId,
-  };
-  list.push(tmp);
-  renderMessages(threadId);
-}
-
-function replacePending(clientId, realMsg) {
-  for (const [tid, arr] of state.messages.entries()) {
-    const idx = arr.findIndex(m => m.id === 'pending:' + clientId);
-    if (idx !== -1) {
-      arr[idx] = realMsg;
-      if (tid === state.activeThreadId) renderMessages(tid);
-      return;
-    }
+    elOnlineList.appendChild(row);
   }
 }
 
-function markPendingFailed(clientId, reason) {
-  for (const [tid, arr] of state.messages.entries()) {
-    const msg = arr.find(m => m.id === 'pending:' + clientId);
-    if (msg) {
-      msg.content = msg.content + `\n\n[FAILED: ${reason} — click to retry]`;
-      msg._failed = true;
-      if (tid === state.activeThreadId) renderMessages(tid);
-
-      // click to retry
-      const node = UI.messages.querySelector(`[data-id="pending:${clientId}"]`);
-      if (node) {
-        node.addEventListener('click', () => retrySend(clientId), { once: true });
-      }
-      return;
-    }
+// Cooldown UI
+let cooldownTimer = null;
+function startCooldown(ms){
+  state.cooldownMs = ms;
+  state.cooldownUntil = now() + ms;
+  elCooldownBar.classList.add('show');
+  elCooldownBar.classList.remove('red');
+  tickCooldown();
+  if(cooldownTimer) clearInterval(cooldownTimer);
+  cooldownTimer = setInterval(tickCooldown, 50);
+}
+function tickCooldown(){
+  const remain = state.cooldownUntil - now();
+  const pct = 1 - (remain / state.cooldownMs);
+  elCooldownFill.style.width = (clamp(pct,0,1)*100).toFixed(1) + '%';
+  if(remain <= 0){
+    clearInterval(cooldownTimer); cooldownTimer=null;
+    elCooldownFill.style.width = '0%';
+    elCooldownBar.classList.remove('show');
+    state.cooldownUntil = 0;
+    state.cooldownMs = 0;
   }
 }
+function cooldownErrorPulse(){
+  elCooldownBar.classList.add('show');
+  elCooldownBar.classList.add('red');
+  $('#composerWrap').classList.add('shake');
+  setTimeout(()=> $('#composerWrap').classList.remove('shake'), 600);
+  setTimeout(()=> elCooldownBar.classList.remove('red'), 500);
+}
 
-function sendMessage() {
-  const me = state.me;
-  if (!me) return toast('Not logged in', 'Login or guest first');
-  const content = UI.composer.value.trim();
-  if (!content) return;
+// sending messages
+function canSendNow(){
+  return now() >= state.cooldownUntil;
+}
+function clientId(){
+  return (cryptoRandom(8) + '-' + now().toString(36));
+}
+function cryptoRandom(len){
+  const a = new Uint8Array(len);
+  crypto.getRandomValues(a);
+  return Array.from(a).map(b => b.toString(16).padStart(2,'0')).join('');
+}
 
-  const threadId = state.activeThreadId;
+async function sendMessage(){
+  if(!state.socket || !state.user) return openAuthModal();
 
-  // Client-side guest DM/group restriction
-  if (me.isGuest && threadId !== 'global') {
-    toast('Guests cannot DM', 'Use a registered account');
+  const text = elComposer.value.trim();
+  if(!text) return;
+
+  // client-side link warning in global (server enforces)
+  if(state.activeThreadId==='global' && /(?:https?:\/\/|www\.)/i.test(text)){
+    toast('No links in global','Use DMs or groups for websites.');
     return;
   }
 
-  UI.composer.value = '';
-  autoGrowTextarea();
+  if(!canSendNow()){
+    cooldownErrorPulse();
+    return;
+  }
 
-  const clientId = newClientId();
-  state.pending.set(clientId, { threadId, content, createdAt: Date.now(), retries: 0 });
-  pushOptimistic(threadId, content, clientId);
+  elComposer.value = '';
+  autosize();
 
-  state.socket.emit('message:send', { threadId, content, clientId }, (ack) => {
-    if (!ack || !ack.ok) {
-      const err = ack?.error || 'send failed';
-      if (err.startsWith('Cooldown:')) {
-        const ms = parseInt(err.split(':')[1] || '0', 10);
-        startCooldownBar(ms);
-        markPendingFailed(clientId, `cooldown ${Math.ceil(ms/1000)}s`);
-      } else {
-        markPendingFailed(clientId, err);
+  const payload = { threadId: state.activeThreadId, content: text, clientId: clientId() };
+  state.socket.emit('message:send', payload, (resp)=>{
+    if(resp && resp.ok){
+      if(resp.duplicate) return;
+      // cooldown: only applies to global; server returns error otherwise
+    }else{
+      const err = resp?.error || 'error';
+      if(String(err).startsWith('Cooldown:')){
+        const ms = parseInt(String(err).split(':')[1],10) || 1200;
+        startCooldown(ms);
+        cooldownErrorPulse();
+      }else{
+        toast('Send failed', err);
       }
-      return;
+      // restore text if failed
+      elComposer.value = text;
+      autosize();
     }
-    // If server returned message, replace; otherwise server broadcast will add it anyway.
-    if (ack.message) replacePending(clientId, ack.message);
-    state.pending.delete(clientId);
   });
 }
 
-UI.sendBtn.addEventListener('click', sendMessage);
-UI.composer.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter' && !e.shiftKey) {
+// idle detection
+function activity(){
+  state.lastActivityAt = now();
+  if(state.idle){
+    state.idle = false;
+    state.socket?.emit('activity:ping', {});
+    // restore presence if user was idle (client-side)
+    if(state.user && state.user.presence==='idle'){
+      // user may have manually chosen idle; don't override
+    }
+  }
+}
+function idleTick(){
+  const diff = now() - state.lastActivityAt;
+  if(diff >= 120_000 && !state.idle){
+    state.idle = true;
+    state.socket?.emit('activity:idle', {});
+  }
+}
+
+function autosize(){
+  elComposer.style.height = 'auto';
+  elComposer.style.height = clamp(elComposer.scrollHeight, 18, 140) + 'px';
+}
+
+// announce
+function openAnnounce(){
+  if(!state.user || state.user.isGuest) return toast('Forbidden');
+  const ta = document.createElement('textarea');
+  ta.placeholder = 'Announcement (global)';
+  const foot = [
+    btn('Cancel','btn', closeModal),
+    btn('Send','btn btnPrimary', async ()=>{
+      try{
+        await API.announce(ta.value.trim());
+        toast('Announcement sent');
+        closeModal();
+      }catch(e){ toast('Failed', e.message); }
+    })
+  ];
+  openModal('Announcement', [ta], foot);
+  setTimeout(()=> ta.focus(), 20);
+}
+
+// wire UI
+elSendBtn.addEventListener('click', sendMessage);
+elComposer.addEventListener('keydown', (e)=>{
+  if(e.key==='Enter' && !e.shiftKey){
     e.preventDefault();
     sendMessage();
   }
 });
+elComposer.addEventListener('input', ()=> { autosize(); activity(); });
+window.addEventListener('mousemove', activity, { passive:true });
+window.addEventListener('keydown', activity, { passive:true });
+window.addEventListener('click', activity, { passive:true });
 
-function retrySend(clientId) {
-  const p = state.pending.get(clientId);
-  if (!p) return;
-  if (p.retries >= 3) return toast('Retry limit', 'Please resend manually');
-  p.retries++;
+elBtnSettings.addEventListener('click', openSettings);
+elBtnProfile.addEventListener('click', openProfile);
+elBtnAuth.addEventListener('click', openAuthModal);
+elBtnNew.addEventListener('click', openNewChat);
+elBtnLogout.addEventListener('click', ()=>{
+  setToken(null);
+  state.user = null;
+  state.socket?.disconnect();
+  state.socket = null;
+  state.threads = [{id:'global',type:'global',name:'Global'}];
+  state.activeThreadId = 'global';
+  renderThreads();
+  renderMessages([]);
+  setMe(null);
+  toast('Logged out');
+});
+elBtnAnnounce.addEventListener('click', openAnnounce);
+elBtnGroup.addEventListener('click', openGroupSettings);
 
-  // restore original content by removing FAILED note
-  const content = p.content;
-  state.socket.emit('message:send', { threadId: p.threadId, content, clientId }, (ack) => {
-    if (!ack || !ack.ok) {
-      markPendingFailed(clientId, ack?.error || 'send failed');
-      return;
-    }
-    if (ack.message) replacePending(clientId, ack.message);
-    state.pending.delete(clientId);
-  });
-}
-
-// ---------- Socket events ----------
-
-function attachSocket() {
-  if (!state.token) return;
-  state.socket = io({
-    auth: { token: state.token }
-  });
-
-  state.socket.on('connect', () => {
-    // join active thread
-    state.socket.emit('thread:join', { threadId: state.activeThreadId }, () => {});
-  });
-
-  state.socket.on('message:new', ({ message }) => {
-    if (!message) return;
-
-    // Dedup against optimistic pending by clientId not available (server doesn't echo clientId in msg)
-    // We'll dedupe by content + close timestamp only for pending replacement fallback.
-    const arr = ensureThreadMessages(message.threadId);
-
-    // Hard dedupe by message.id
-    if (arr.some(m => m.id === message.id)) return;
-
-    arr.push(message);
-    // Keep last 400 per thread
-    if (arr.length > 400) arr.splice(0, arr.length - 400);
-
-    const mention = isMentionToMe(message.content || '');
-    bumpUnread(message.threadId, mention);
-
-    // If active thread, render immediately and mark read
-    if (message.threadId === state.activeThreadId) {
-      renderMessages(state.activeThreadId);
-      resetUnread(state.activeThreadId);
-    }
-  });
-
-  state.socket.on('message:edit', ({ messageId, content, editedAt }) => {
-    for (const [tid, arr] of state.messages.entries()) {
-      const m = arr.find(x => x.id === messageId);
-      if (m) {
-        m.content = content;
-        m.editedAt = editedAt;
-        if (tid === state.activeThreadId) renderMessages(tid);
-        return;
-      }
-    }
-  });
-
-  state.socket.on('message:delete', ({ messageId, deletedAt }) => {
-    for (const [tid, arr] of state.messages.entries()) {
-      const m = arr.find(x => x.id === messageId);
-      if (m) {
-        m.deletedAt = deletedAt;
-        if (tid === state.activeThreadId) renderMessages(tid);
-        return;
-      }
-    }
-  });
-
-  state.socket.on('presence:list', ({ users }) => {
-    state.online = Array.isArray(users) ? users.map(x => x.user) : [];
-    for (const u of state.online) state.usersById.set(u.id, u);
-    renderOnline();
-    renderThreads();
-  });
-
-  state.socket.on('presence:update', ({ user }) => {
-    if (!user) return;
-    state.usersById.set(user.id, user);
-    if (state.me && user.id === state.me.id) {
-      state.me = user;
-      saveSession(state.token, state.me);
-      renderMe();
-    }
-    renderOnline();
-    renderThreads();
-  });
-
-  state.socket.on('connect_error', (err) => {
-    toast('Socket error', err?.message || 'connect error');
-  });
-}
-
-// ---------- Online panel ----------
-
-function renderOnline() {
-  UI.onlineList.innerHTML = '';
-  const list = Array.from(state.usersById.values())
-    .filter(u => state.online.some(o => o.id === u.id))
-    .sort((a,b) => {
-      const rank = { online:0, idle:1, dnd:2, invisible:3 };
-      const ra = rank[a.presence] ?? 9;
-      const rb = rank[b.presence] ?? 9;
-      if (ra !== rb) return ra - rb;
-      return a.username.localeCompare(b.username);
-    });
-
-  UI.onlineCount.textContent = String(list.length);
-
-  list.forEach(u => {
-    const row = el('div', 'userRow');
-    const dot = el('div', 'dot ' + presenceDotClass(u.presence));
-    const meta = el('div', 'userMeta');
-
-    const name = el('div', 'userName');
-    const nm = el('span');
-    nm.textContent = u.username;
-    name.appendChild(nm);
-
-    const badgeRow = el('div', 'badgeRow');
-    (u.badges || []).forEach(b => {
-      const bd = el('span', badgeClass(b));
-      bd.textContent = b;
-      badgeRow.appendChild(bd);
-    });
-
-    const status = el('div', 'userStatus');
-    status.textContent = u.statusText || (u.isGuest ? 'Guest' : '');
-
-    meta.appendChild(name);
-    meta.appendChild(status);
-    meta.appendChild(badgeRow);
-
-    row.appendChild(dot);
-    row.appendChild(meta);
-
-    row.addEventListener('click', () => openProfile(u));
-    UI.onlineList.appendChild(row);
-  });
-}
-
-// ---------- Profile modal ----------
-
-function openProfileByName(username) {
-  const u = Array.from(state.usersById.values()).find(x => x.username === username);
-  if (u) return openProfile(u);
-  toast('Profile', 'User not in online list yet');
-}
-
-function openProfile(user) {
-  const isSelf = state.me && user.id === state.me.id;
-
-  const header = el('div');
-  header.style.display = 'flex';
-  header.style.gap = '10px';
-  header.style.alignItems = 'center';
-
-  const dot = el('div', 'dot ' + presenceDotClass(user.presence));
-  dot.style.width = '12px';
-  dot.style.height = '12px';
-
-  const title = el('div');
-  title.style.minWidth = '0';
-  const nm = el('div');
-  nm.style.fontWeight = '900';
-  nm.textContent = user.username;
-  const st = el('div');
-  st.style.color = 'var(--muted)';
-  st.style.fontSize = '12px';
-  st.textContent = user.statusText || (user.isGuest ? 'Guest' : '');
-  title.appendChild(nm);
-  title.appendChild(st);
-
-  header.appendChild(dot);
-  header.appendChild(title);
-
-  const badges = el('div', 'badgeRow');
-  (user.badges || []).forEach(b => {
-    const bd = el('span', badgeClass(b));
-    bd.textContent = b;
-    badges.appendChild(bd);
-  });
-
-  const bio = el('div');
-  bio.style.whiteSpace = 'pre-wrap';
-  bio.style.color = user.bio ? 'var(--text)' : 'var(--muted)';
-  bio.textContent = user.bio || 'No bio yet.';
-
-  const nodes = [header, badges, bio];
-
-  const foot = [];
-  if (isSelf) {
-    const edit = el('button', 'btn btnPrimary');
-    edit.textContent = 'Edit Profile';
-    edit.addEventListener('click', () => openEditProfile());
-    foot.push(edit);
-
-    const pres = el('button', 'btn');
-    pres.textContent = 'Set Presence';
-    pres.addEventListener('click', () => openPresenceModal());
-    foot.push(pres);
-  } else {
-    if (state.me && !state.me.isGuest && !user.isGuest) {
-      const dm = el('button', 'btn btnPrimary');
-      dm.textContent = 'DM';
-      dm.addEventListener('click', () => createDM(user.username));
-      foot.push(dm);
-    }
-  }
-
-  const close = el('button', 'btn');
-  close.textContent = 'Close';
-  close.addEventListener('click', closeModal);
-  foot.push(close);
-
-  openModal('Profile', nodes, foot);
-}
-
-function openEditProfile() {
-  const me = state.me;
-  if (!me) return;
-
-  const r1 = el('div', 'row');
-  const l1 = el('label'); l1.textContent = 'Status';
-  const i1 = el('input'); i1.value = me.statusText || ''; i1.maxLength = 64;
-  r1.appendChild(l1); r1.appendChild(i1);
-
-  const r2 = el('div', 'row');
-  const l2 = el('label'); l2.textContent = 'Bio';
-  const t2 = el('textarea'); t2.value = me.bio || ''; t2.maxLength = 240;
-  r2.appendChild(l2); r2.appendChild(t2);
-
-  const save = el('button', 'btn btnPrimary');
-  save.textContent = 'Save';
-  save.addEventListener('click', async () => {
-    try {
-      const data = await api('/api/me/profile', {
-        method: 'POST',
-        body: JSON.stringify({ statusText: i1.value, bio: t2.value })
-      });
-      state.me = data.user;
-      saveSession(state.token, state.me);
-      renderMe();
-      toast('Saved', 'Profile updated');
-      closeModal();
-    } catch (e) {
-      toast('Save failed', e.message);
-    }
-  });
-
-  const cancel = el('button', 'btn');
-  cancel.textContent = 'Cancel';
-  cancel.addEventListener('click', closeModal);
-
-  openModal('Edit Profile', [r1, r2], [save, cancel]);
-}
-
-function openPresenceModal() {
-  const me = state.me;
-  if (!me || !state.socket) return;
-
-  const r = el('div', 'row');
-  const lab = el('label'); lab.textContent = 'Presence';
-  const sel = el('select');
-  ['online','idle','dnd','invisible'].forEach(p => {
-    const o = el('option'); o.value = p; o.textContent = p;
-    if (me.presence === p) o.selected = true;
-    sel.appendChild(o);
-  });
-  r.appendChild(lab); r.appendChild(sel);
-
-  const save = el('button', 'btn btnPrimary');
-  save.textContent = 'Set';
-  save.addEventListener('click', async () => {
-    const p = sel.value;
-    try {
-      // server also persists via socket presence:set (fast)
-      state.socket.emit('presence:set', { presence: p }, () => {});
-      await api('/api/me/profile', { method:'POST', body: JSON.stringify({ presence: p }) });
-      toast('Presence', 'Updated');
-      closeModal();
-    } catch (e) {
-      toast('Presence failed', e.message);
-    }
-  });
-
-  const cancel = el('button', 'btn');
-  cancel.textContent = 'Cancel';
-  cancel.addEventListener('click', closeModal);
-
-  openModal('Set Presence', [r], [save, cancel]);
-}
-
-// ---------- Message edit/delete ----------
-
-function openEditMessage(m) {
-  const r = el('div', 'row');
-  const lab = el('label'); lab.textContent = 'Edit';
-  const t = el('textarea'); t.value = m.content || ''; t.maxLength = 1500;
-  r.appendChild(lab); r.appendChild(t);
-
-  const save = el('button', 'btn btnPrimary');
-  save.textContent = 'Save';
-  save.addEventListener('click', () => {
-    state.socket.emit('message:edit', { messageId: m.id, content: t.value }, (ack) => {
-      if (!ack || !ack.ok) return toast('Edit failed', ack?.error || 'error');
-      closeModal();
-    });
-  });
-
-  const cancel = el('button', 'btn');
-  cancel.textContent = 'Cancel';
-  cancel.addEventListener('click', closeModal);
-
-  openModal('Edit Message', [r], [save, cancel]);
-}
-
-function deleteMessage(m) {
-  state.socket.emit('message:delete', { messageId: m.id }, (ack) => {
-    if (!ack || !ack.ok) return toast('Delete failed', ack?.error || 'error');
-  });
-}
-
-// ---------- New DM / Group ----------
-
-async function createDM(username) {
-  try {
-    const data = await api('/api/threads/dm', { method:'POST', body: JSON.stringify({ username }) });
+// boot
+async function afterLogin(){
+  try{
+    await refreshMe();
     await refreshThreads();
-    closeModal();
-    await openThread(data.threadId);
-  } catch (e) {
-    toast('DM failed', e.message);
-  }
-}
-
-async function openNewModal() {
-  const me = state.me;
-  if (!me) return toast('Auth required', 'Login or guest first');
-  if (me.isGuest) return toast('Guests', 'Guests cannot create DMs/groups');
-
-  // Mode select
-  const r = el('div', 'row');
-  const lab = el('label'); lab.textContent = 'Type';
-  const sel = el('select');
-  const o1 = el('option'); o1.value='dm'; o1.textContent='DM';
-  const o2 = el('option'); o2.value='group'; o2.textContent='Group';
-  sel.appendChild(o1); sel.appendChild(o2);
-  r.appendChild(lab); r.appendChild(sel);
-
-  const wrap = el('div');
-  wrap.style.display = 'flex';
-  wrap.style.flexDirection = 'column';
-  wrap.style.gap = '10px';
-
-  const dmRow = el('div', 'row');
-  const dmLab = el('label'); dmLab.textContent = 'Username';
-  const dmIn = el('input'); dmIn.placeholder = 'e.g. alice';
-  dmRow.appendChild(dmLab); dmRow.appendChild(dmIn);
-
-  const gNameRow = el('div', 'row');
-  const gNameLab = el('label'); gNameLab.textContent = 'Group name';
-  const gNameIn = el('input'); gNameIn.placeholder = 'e.g. Raid Squad';
-  gNameRow.appendChild(gNameLab); gNameRow.appendChild(gNameIn);
-
-  const gMembersRow = el('div', 'row');
-  const gMembersLab = el('label'); gMembersLab.textContent = 'Members';
-  const gMembersIn = el('input'); gMembersIn.placeholder = 'Search users…';
-  gMembersRow.appendChild(gMembersLab); gMembersRow.appendChild(gMembersIn);
-
-  const pickWrap = el('div');
-  pickWrap.style.display='flex';
-  pickWrap.style.gap='6px';
-  pickWrap.style.flexWrap='wrap';
-
-  let picked = []; // user objects
-
-  function renderPicked() {
-    pickWrap.innerHTML = '';
-    picked.forEach(u => {
-      const b = el('button', 'btn');
-      b.textContent = u.username + ' ✕';
-      b.addEventListener('click', () => {
-        picked = picked.filter(x => x.id !== u.id);
-        renderPicked();
-      });
-      pickWrap.appendChild(b);
-    });
-  }
-
-  let searchTimer = null;
-  gMembersIn.addEventListener('input', () => {
-    const q = gMembersIn.value.trim();
-    if (searchTimer) clearTimeout(searchTimer);
-    searchTimer = setTimeout(async () => {
-      if (!q) return;
-      try {
-        const data = await api('/api/users/search?q=' + encodeURIComponent(q));
-        const list = data.users || [];
-        // popup list
-        const box = el('div');
-        box.style.border = '1px solid var(--line)';
-        box.style.borderRadius = '12px';
-        box.style.overflow='hidden';
-        box.style.background='rgba(255,255,255,.02)';
-
-        list.forEach(u => {
-          if (u.id === state.me.id) return;
-          const it = el('div');
-          it.style.padding='9px 10px';
-          it.style.cursor='pointer';
-          it.textContent = u.username;
-          it.addEventListener('click', () => {
-            if (!picked.some(x => x.id === u.id)) picked.push(u);
-            renderPicked();
-            box.remove();
-            gMembersIn.value = '';
-          });
-          it.addEventListener('mouseenter', () => it.style.background='rgba(255,255,255,.04)');
-          it.addEventListener('mouseleave', () => it.style.background='transparent');
-          box.appendChild(it);
-        });
-
-        // Replace any existing box
-        const prev = wrap.querySelector('[data-searchbox="1"]');
-        if (prev) prev.remove();
-        box.dataset.searchbox = '1';
-        wrap.appendChild(box);
-      } catch {}
-    }, 220);
-  });
-
-  function renderMode() {
-    wrap.innerHTML = '';
-    wrap.appendChild(r);
-    if (sel.value === 'dm') {
-      wrap.appendChild(dmRow);
-    } else {
-      wrap.appendChild(gNameRow);
-      wrap.appendChild(gMembersRow);
-      wrap.appendChild(pickWrap);
-      renderPicked();
-    }
-  }
-  sel.addEventListener('change', renderMode);
-  renderMode();
-
-  const create = el('button', 'btn btnPrimary');
-  create.textContent = 'Create';
-  create.addEventListener('click', async () => {
-    try {
-      if (sel.value === 'dm') {
-        await createDM(dmIn.value.trim());
-        return;
-      }
-      const name = gNameIn.value.trim();
-      const members = picked.map(u => u.id);
-      const data = await api('/api/threads/group', { method:'POST', body: JSON.stringify({ name, members }) });
-      await refreshThreads();
-      closeModal();
-      await openThread(data.threadId);
-    } catch (e) {
-      toast('Create failed', e.message);
-    }
-  });
-
-  const cancel = el('button', 'btn');
-  cancel.textContent = 'Cancel';
-  cancel.addEventListener('click', closeModal);
-
-  openModal('New Chat', [wrap], [create, cancel]);
-}
-
-// ---------- Auth modal ----------
-
-function openAuthModal() {
-  const tabs = el('div');
-  tabs.style.display='flex';
-  tabs.style.gap='8px';
-
-  const mode = { v: 'login' };
-
-  const btnLogin = el('button', 'btn btnPrimary');
-  btnLogin.textContent='Login';
-  const btnReg = el('button', 'btn');
-  btnReg.textContent='Register';
-  const btnGuest = el('button', 'btn');
-  btnGuest.textContent='Guest';
-
-  function setMode(v) {
-    mode.v = v;
-    btnLogin.classList.toggle('btnPrimary', v==='login');
-    btnReg.classList.toggle('btnPrimary', v==='register');
-    btnGuest.classList.toggle('btnPrimary', v==='guest');
-    renderBody();
-  }
-  btnLogin.addEventListener('click', () => setMode('login'));
-  btnReg.addEventListener('click', () => setMode('register'));
-  btnGuest.addEventListener('click', () => setMode('guest'));
-  tabs.append(btnLogin, btnReg, btnGuest);
-
-  const body = el('div');
-  body.style.display='flex';
-  body.style.flexDirection='column';
-  body.style.gap='10px';
-
-  const uRow = el('div','row');
-  const uLab = el('label'); uLab.textContent='Username';
-  const uIn = el('input'); uIn.placeholder='2-20 chars';
-  uRow.append(uLab,uIn);
-
-  const pRow = el('div','row');
-  const pLab = el('label'); pLab.textContent='Password';
-  const pIn = el('input'); pIn.type='password'; pIn.placeholder='min 6 chars';
-  pRow.append(pLab,pIn);
-
-  function renderBody() {
-    body.innerHTML='';
-    body.appendChild(tabs);
-    if (mode.v === 'guest') {
-      const info = el('div');
-      info.style.color='var(--muted)';
-      info.style.fontSize='12px';
-      info.textContent='Guests can chat in global (5s cooldown) but cannot DM, add friends, or create groups.';
-      body.appendChild(info);
-      return;
-    }
-    body.appendChild(uRow);
-    body.appendChild(pRow);
-  }
-  renderBody();
-
-  const go = el('button','btn btnPrimary');
-  go.textContent='Continue';
-  go.addEventListener('click', async () => {
-    try {
-      if (mode.v === 'guest') {
-        const data = await fetch('/api/guest', { method:'POST' }).then(r => r.json());
-        if (!data.token) throw new Error(data.error || 'guest failed');
-        await finishAuth(data.token, data.user);
-        closeModal();
-        return;
-      }
-      const username = uIn.value.trim();
-      const password = pIn.value;
-      const endpoint = mode.v === 'register' ? '/api/register' : '/api/login';
-      const data = await api(endpoint, { method:'POST', body: JSON.stringify({ username, password }) });
-      await finishAuth(data.token, data.user);
-      closeModal();
-    } catch (e) {
-      toast('Auth failed', e.message);
-    }
-  });
-
-  const cancel = el('button','btn');
-  cancel.textContent='Cancel';
-  cancel.addEventListener('click', closeModal);
-
-  openModal('Authenticate', [body], [go, cancel]);
-}
-
-async function finishAuth(token, me) {
-  state.token = token;
-  state.me = me;
-  saveSession(token, me);
-  renderMe();
-  await refreshThreads();
-  attachSocket();
-  await openThread('global');
-}
-
-// ---------- Announcement modal ----------
-
-function openAnnounceModal() {
-  const me = state.me;
-  if (!me || !me.badges?.includes('ANNOUNCEMENT')) return;
-
-  const r = el('div','row');
-  const lab = el('label'); lab.textContent='Message';
-  const t = el('textarea'); t.placeholder='Announcement (global)'; t.maxLength=1500;
-  r.append(lab,t);
-
-  const send = el('button','btn btnPrimary');
-  send.textContent='Send';
-  send.addEventListener('click', async () => {
-    try {
-      await api('/api/announce', { method:'POST', body: JSON.stringify({ content: t.value }) });
-      toast('Announcement', 'Sent');
-      closeModal();
-    } catch (e) {
-      toast('Announce failed', e.message);
-    }
-  });
-
-  const cancel = el('button','btn');
-  cancel.textContent='Cancel';
-  cancel.addEventListener('click', closeModal);
-
-  openModal('Announcement', [r], [send, cancel]);
-}
-
-// ---------- Buttons ----------
-
-UI.btnAuth.addEventListener('click', openAuthModal);
-UI.btnProfile.addEventListener('click', () => {
-  if (!state.me) return openAuthModal();
-  openProfile(state.me);
-});
-UI.btnNew.addEventListener('click', openNewModal);
-UI.btnLogout.addEventListener('click', () => {
-  clearSession();
-  location.reload();
-});
-UI.btnAnnounce.addEventListener('click', openAnnounceModal);
-
-// ---------- Boot ----------
-
-(async function boot() {
-  loadSession();
-  if (state.token) await ensureMe();
-  renderMe();
-
-  if (!state.me) {
-    // Start logged out view; still show Global thread placeholder
-    state.threads = [{ id:'global', type:'global', name:'Global', members:[], createdAt: Date.now() }];
     renderThreads();
-    UI.threadTitle.textContent = '# global';
-    UI.threadSub.textContent = 'Real-time chat';
+    setActiveThread('global');
+    connectSocket();
+  }catch(e){
+    toast('Init failed', e.message);
+    showLoading('Init failed…');
+  }finally{
+    hideLoading();
+  }
+}
+
+async function boot(){
+  showLoading('Starting…');
+  // theme: force black
+  document.documentElement.style.setProperty('--bg','#000');
+
+  // set placeholder state
+  state.threads = [{id:'global',type:'global',name:'Global'}];
+  renderThreads();
+  renderMessages([]);
+
+  if(!state.token){
+    setMe(null);
+    hideLoading();
     return;
   }
 
-  await refreshThreads();
-  attachSocket();
-  await openThread(state.activeThreadId);
-})();
+  try{
+    elEnvBadge.textContent = 'BETA';
+    await refreshMe();
+    await refreshThreads();
+    renderThreads();
+    setActiveThread(state.activeThreadId || 'global');
+    connectSocket();
+    hideLoading();
+    // beta popup only on first account creation (handled during register) OR first time per id
+    // If user has token but never saw: keep optional
+  }catch(e){
+    setToken(null);
+    setMe(null);
+    hideLoading();
+    toast('Session expired', 'Please login again.');
+  }
+  // idle check loop
+  setInterval(idleTick, 10_000);
+}
+boot();
+
