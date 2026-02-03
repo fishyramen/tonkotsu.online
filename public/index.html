@@ -2,721 +2,578 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>tonkotsu.online</title>
-  <meta name="color-scheme" content="dark" />
+  <link rel="preconnect" href="https://cdn.socket.io" crossorigin>
   <style>
     :root{
-      --bg:#07080b;
-      --panel:#0c0f14;
-      --panel2:#0a0c10;
-      --panel3:#0f1218;
-      --border:rgba(140,160,200,.16);
-      --border2:rgba(140,160,200,.10);
-      --txt:rgba(236,242,255,.92);
-      --muted:rgba(154,163,183,.86);
-      --muted2:rgba(154,163,183,.68);
-      --shadow: 0 18px 60px rgba(0,0,0,.55);
-      --accent:#8bb6ff;
-      --accent2:#a98bff;
-      --good:#69ffba;
-      --warn:#ffd278;
-      --bad:#ff5c7a;
-      --ring: 0 0 0 3px rgba(139,182,255,.18);
-      --radius:18px;
-      --radius2:14px;
-      --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-      --sans: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji","Segoe UI Emoji";
+      --bg:#0b0d10;
+      --panel:#0f1217;
+      --panel2:#0d1015;
+      --line:#1d2430;
+      --text:#d6d8de;
+      --muted:#8a93a2;
+      --accent:#6ea8fe;
+      --danger:#ff4d4f;
+      --good:#3ddc97;
+      --warn:#f5c451;
+      --dnd:#ff4d4f;
+      --idle:#f5c451;
+      --inv:#4b5563;
+      --shadow: 0 10px 30px rgba(0,0,0,.35);
+      --r:12px;
+      --pad:10px;
+      --fs:13px;
     }
     *{ box-sizing:border-box; }
-    html,body{ height:100%; }
-    body{
-      margin:0;
-      font-family:var(--sans);
-      background: radial-gradient(1200px 900px at 25% -10%, rgba(139,182,255,.10), transparent 60%),
-                  radial-gradient(900px 600px at 110% 20%, rgba(169,139,255,.10), transparent 55%),
-                  linear-gradient(180deg, var(--bg), #05060a 60%, #05060a);
-      color:var(--txt);
-      overflow:hidden;
-    }
+    html,body{ height:100%; margin:0; background:var(--bg); color:var(--text); font:var(--fs)/1.2 ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Arial; }
+    button,input,select,textarea{ font:inherit; color:inherit; background:transparent; border:1px solid var(--line); border-radius:10px; outline:none; }
+    button{ cursor:pointer; }
+    a{ color:inherit; text-decoration:none; }
 
-    /* Custom cursor (small) — no trail */
-    html[data-cursor="custom"] { cursor:none; }
-    html[data-cursor="custom"] * { cursor:none !important; }
-    #cursor{
-      position:fixed;
-      left:0; top:0;
-      width:12px; height:12px; /* smaller */
-      border-radius:999px;
-      border:1px solid rgba(210,220,255,.55);
-      background: rgba(210,220,255,.10);
-      box-shadow: 0 8px 30px rgba(0,0,0,.6);
-      transform:translate(-50%,-50%);
-      z-index:9999;
-      pointer-events:none;
-      display:none;
-      transition: transform 40ms linear;
-    }
-
-    /* Login */
-    #loginWrap{
-      position:fixed; inset:0;
-      display:flex;
-      align-items:center;
-      justify-content:center;
-      padding:28px;
-    }
-    .loginCard{
-      width:min(920px, 100%);
+    .app{
       display:grid;
-      grid-template-columns: 1.1fr .9fr;
-      gap:18px;
-      background: rgba(10,12,16,.80);
-      border:1px solid var(--border);
-      border-radius:24px;
-      box-shadow:var(--shadow);
-      overflow:hidden;
-    }
-    .loginHero{
-      padding:22px 22px 18px;
-      background:
-        radial-gradient(900px 600px at 10% 20%, rgba(139,182,255,.16), transparent 55%),
-        radial-gradient(700px 500px at 80% 0%, rgba(169,139,255,.15), transparent 55%),
-        linear-gradient(180deg, rgba(12,15,20,.92), rgba(10,12,16,.92));
-      border-right:1px solid var(--border2);
-    }
-    .brand{
-      display:flex; align-items:center; gap:10px;
-      margin-bottom:12px;
-    }
-    .logo{
-      width:38px;height:38px;border-radius:14px;
-      background: linear-gradient(135deg, rgba(139,182,255,.9), rgba(169,139,255,.85));
-      box-shadow: 0 10px 30px rgba(0,0,0,.55);
-    }
-    .brand h1{
-      margin:0;
-      font-size:20px;
-      letter-spacing:.2px;
-      font-weight:900;
-    }
-    .tag{
-      color:var(--muted);
-      font-size:13px;
-      line-height:1.6;
-      max-width:54ch;
-    }
-    .pillRow{ display:flex; gap:8px; flex-wrap:wrap; margin-top:14px; }
-    .pill{
-      padding:6px 10px;
-      border-radius:999px;
-      border:1px solid var(--border2);
-      background: rgba(12,15,20,.65);
-      color: rgba(235,240,255,.85);
-      font-size:12px;
+      grid-template-columns: 240px 1fr 280px;
+      height:100vh;
+      gap:0;
     }
 
-    .loginForm{
-      padding:22px;
+    /* Left sidebar */
+    .side{
+      background:linear-gradient(180deg,var(--panel),var(--panel2));
+      border-right:1px solid var(--line);
       display:flex;
       flex-direction:column;
-      gap:12px;
-      background: rgba(10,12,16,.92);
+      min-width:240px;
     }
-    .fieldLabel{
-      font-size:12px;
-      color:var(--muted2);
-      font-weight:800;
-      letter-spacing:.3px;
-      margin-bottom:6px;
+    .brand{
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      padding:10px 10px;
+      border-bottom:1px solid var(--line);
     }
-    .input{
-      width:100%;
-      border-radius:16px;
-      border:1px solid var(--border);
-      background: rgba(7,8,11,.6);
-      color:var(--txt);
-      padding:12px 12px;
-      outline:none;
-      box-shadow: inset 0 1px 0 rgba(255,255,255,.04);
-    }
-    .input:focus{ border-color: rgba(139,182,255,.35); box-shadow: var(--ring); }
-
-    .btnRow{ display:flex; gap:10px; margin-top:4px; }
-    .btn{
-      border:1px solid var(--border);
-      background: rgba(12,15,20,.7);
-      color:var(--txt);
-      padding:10px 12px;
-      border-radius:16px;
-      font-weight:900;
+    .brand .logo{
+      display:flex; gap:8px; align-items:center;
+      font-weight:700;
       letter-spacing:.2px;
-      cursor:pointer;
-      user-select:none;
-      transition: transform 120ms ease, border-color 120ms ease, background 120ms ease;
     }
-    .btn:hover{ transform: translateY(-1px); border-color: rgba(139,182,255,.35); }
-    .btn:active{ transform: translateY(0px) scale(.99); }
-    .btn.primary{
-      border-color: rgba(139,182,255,.35);
-      background: linear-gradient(135deg, rgba(139,182,255,.25), rgba(169,139,255,.18));
-    }
-    .btn.danger{
-      border-color: rgba(255,92,122,.35);
-      background: rgba(255,92,122,.10);
-    }
-    #loginMsg{
-      min-height: 18px;
-      color: var(--muted);
-      font-size: 12px;
-      margin-top: 2px;
-    }
-
-    /* App layout */
-    #app{
-      position:fixed; inset:0;
-      display:none;
-    }
-    .appTop{
-      height:54px;
-      display:flex;
-      align-items:center;
-      justify-content:space-between;
-      padding:0 12px 0 14px;
-      border-bottom:1px solid var(--border2);
-      background: rgba(8,10,14,.72);
-      backdrop-filter: blur(10px);
-    }
-    .topLeft{
-      display:flex; align-items:center; gap:10px;
-      min-width: 260px;
-    }
-    .topTitle{
-      display:flex; flex-direction:column;
-      line-height:1.1;
-    }
-    .topTitle b{ font-size:13px; }
-    .topTitle span{ font-size:11px; color:var(--muted2); }
-    .topActions{ display:flex; align-items:center; gap:10px; }
-
-    .layout{
-      height: calc(100% - 54px);
-      display:grid;
-      grid-template-columns: 320px 1fr 320px;
-      gap:10px;
-      padding:10px;
-    }
-    .panel{
-      border:1px solid var(--border2);
-      background: rgba(10,12,16,.72);
-      border-radius: var(--radius);
-      overflow:hidden;
-      box-shadow: 0 14px 60px rgba(0,0,0,.35);
-    }
-    .panelHead{
-      height:46px;
-      display:flex;
-      align-items:center;
-      justify-content:space-between;
-      padding:0 12px;
-      border-bottom:1px solid var(--border2);
-      background: rgba(12,15,20,.55);
-    }
-    .panelHead b{ font-size:12px; letter-spacing:.3px; }
-    .panelHead .mini{
-      display:flex; align-items:center; gap:8px;
-      color:var(--muted);
-      font-size:11px;
-    }
-    .chip{
-      display:inline-flex;
-      align-items:center;
-      gap:6px;
-      padding:4px 8px;
-      border-radius:999px;
-      border:1px solid var(--border2);
-      background: rgba(8,10,14,.55);
-      font-size:11px;
-      color: rgba(235,240,255,.86);
-    }
-    .chip.ann{ border-color: rgba(255,210,120,.25); color: rgba(255,210,120,.95); }
-    .chip.err{ border-color: rgba(255,92,122,.35); color: rgba(255,92,122,.95); }
-
-    /* Left: threads */
-    .leftBody{ height: calc(100% - 46px); display:flex; flex-direction:column; }
-    .searchWrap{
-      padding:10px;
-      border-bottom:1px solid var(--border2);
-      display:flex;
-      gap:10px;
-    }
-    #searchThreads{ flex:1; }
-    .threadList{ padding:10px; overflow:auto; height:100%; }
-    .thread{
-      border:1px solid rgba(140,160,200,.10);
-      background: rgba(7,8,11,.32);
-      border-radius:16px;
-      padding:10px;
-      margin-bottom:10px;
-      cursor:pointer;
-      transition: border-color 120ms ease, transform 120ms ease, background 120ms ease;
-      position:relative;
-    }
-    .thread:hover{ transform: translateY(-1px); border-color: rgba(139,182,255,.22); background: rgba(7,8,11,.40); }
-    .thread.active{ border-color: rgba(139,182,255,.40); background: rgba(12,15,20,.60); }
-    .threadTop{ display:flex; align-items:center; justify-content:space-between; gap:10px; }
-    .threadName{ font-weight:900; font-size:12px; letter-spacing:.2px; }
-    .threadMeta{ font-size:10px; color:var(--muted2); text-transform:uppercase; letter-spacing:.6px; }
-    .threadLast{ margin-top:6px; font-size:11px; color:var(--muted); line-height:1.35; }
-    .pingDot{
-      position:absolute; right:10px; top:10px;
-      width:10px; height:10px; border-radius:999px;
-      background: var(--bad);
-      box-shadow: 0 0 0 4px rgba(255,92,122,.12);
-      display:none;
-    }
-    .thread.ping .pingDot{ display:block; }
-
-    /* Center: messages */
-    .centerBody{
-      height: calc(100% - 46px - 62px);
-      overflow:auto;
-      padding:12px;
-    }
-    .msg{
-      border:1px solid rgba(140,160,200,.10);
-      background: rgba(7,8,11,.28);
-      border-radius: 16px;
-      padding:10px;
-      margin-bottom:10px;
-      transition: border-color 120ms ease;
-    }
-    .msg:hover{ border-color: rgba(139,182,255,.18); }
-    .msgTop{ display:flex; align-items:baseline; justify-content:space-between; gap:10px; }
-    .msgUser{ font-weight:900; font-size:12px; }
-    .msgTime{ font-size:10px; color:var(--muted2); font-family:var(--mono); }
-    .msgBody{ margin-top:6px; font-size:12px; line-height:1.45; color:rgba(235,240,255,.92); white-space:pre-wrap; word-break:break-word; }
-    .chips{ margin-top:6px; display:flex; gap:6px; flex-wrap:wrap; }
-
-    .composer{
-      height:62px;
-      border-top:1px solid var(--border2);
-      background: rgba(12,15,20,.55);
-      display:flex;
-      align-items:center;
-      gap:10px;
-      padding:10px;
-      position:relative;
-    }
-    .composer .input{ border-radius: 16px; padding:10px 12px; }
-    #btnSend{ white-space:nowrap; }
-
-    /* compact cooldown UI */
-    .cooldownWrap{
-      position:absolute;
-      left:12px; right:12px;
-      bottom:6px;
-      height:3px;
-      opacity:.0;
-      transition: opacity 120ms ease;
-    }
-    #cooldownBar{
-      height:3px;
-      border-radius:999px;
-      width:0%;
-      background: linear-gradient(90deg, rgba(139,182,255,.6), rgba(169,139,255,.55));
-      box-shadow: 0 8px 24px rgba(0,0,0,.35);
-    }
-    #cooldownText{
-      position:absolute;
-      right:12px;
-      top:-18px;
-      font-size:10px;
-      color: rgba(154,163,183,.75);
-      font-family: var(--mono);
-    }
-    .cd-red{ border-color: rgba(255,92,122,.40) !important; }
-    .cd-shake{ animation: shake .18s linear 2; }
-    @keyframes shake{
-      0%{ transform: translateX(0) }
-      25%{ transform: translateX(-2px) }
-      50%{ transform: translateX(2px) }
-      75%{ transform: translateX(-2px) }
-      100%{ transform: translateX(0) }
-    }
-
-    /* Right: online users */
-    .rightBody{
-      height: calc(100% - 46px);
-      overflow:auto;
-      padding:10px;
-    }
-    .userRow{
-      border:1px solid rgba(140,160,200,.10);
-      background: rgba(7,8,11,.28);
-      border-radius:16px;
-      padding:10px;
-      margin-bottom:10px;
-      cursor:pointer;
-      transition: border-color 120ms ease, transform 120ms ease;
-    }
-    .userRow:hover{ transform: translateY(-1px); border-color: rgba(139,182,255,.18); }
-    .userTop{ display:flex; align-items:center; justify-content:space-between; gap:10px; }
-    .who{ display:flex; align-items:center; gap:10px; min-width:0; }
     .dot{
-      width:10px;height:10px;border-radius:999px;
-      background: var(--good);
-      box-shadow: 0 0 0 4px rgba(105,255,186,.10);
+      width:10px; height:10px; border-radius:99px;
+      background:var(--good);
+      box-shadow:0 0 0 2px rgba(0,0,0,.35);
       flex:0 0 auto;
     }
-    .dot.idle{ background: var(--warn); box-shadow: 0 0 0 4px rgba(255,210,120,.10); }
-    .dot.dnd{ background: var(--bad); box-shadow: 0 0 0 4px rgba(255,92,122,.12); }
-    .dot.inv{ background: rgba(154,163,183,.45); box-shadow: 0 0 0 4px rgba(154,163,183,.08); }
-    .nameCol{ display:flex; flex-direction:column; min-width:0; }
-    .uname{
-      font-weight:900; font-size:12px;
-      overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+    .dot.online{ background:var(--good); }
+    .dot.idle{ background:var(--idle); }
+    .dot.dnd{ background:var(--dnd); }
+    .dot.invisible{ background:var(--inv); }
+    .miniBadge{
+      padding:2px 6px;
+      font-size:11px;
+      border-radius:99px;
+      border:1px solid var(--line);
+      color:var(--muted);
     }
-    .uStatus{
-      font-size:11px; color: var(--muted);
-      overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
-    }
-    .badges{
-      display:flex; gap:6px; flex-wrap:wrap; justify-content:flex-end;
-    }
-    .badge{
-      font-size:10px;
-      padding:4px 7px;
-      border-radius:999px;
-      border:1px solid rgba(140,160,200,.14);
-      background: rgba(12,15,20,.55);
-      color: rgba(235,240,255,.85);
-      text-transform:uppercase;
-      letter-spacing:.6px;
-    }
-    .badge.guest{ border-color: rgba(255,210,120,.25); color: rgba(255,210,120,.95); }
-    .badge.beta{ border-color: rgba(139,182,255,.22); color: rgba(139,182,255,.92); }
-    .badge.early{ border-color: rgba(169,139,255,.22); color: rgba(169,139,255,.92); }
-    .badge.announcement{ border-color: rgba(255,210,120,.25); color: rgba(255,210,120,.95); }
+    .badgeGuest{ border-color:#3b3b3b; color:#b9bec9; }
+    .badgeBeta{ border-color:#264b8f; color:#a7c0ff; }
+    .badgeEarly{ border-color:#3f2a69; color:#d6b6ff; }
+    .badgeAnn{ border-color:#6a2a2a; color:#ffb3b3; }
 
-    /* Context menu */
-    #ctx{
-      position:fixed;
-      min-width: 220px;
-      border-radius: 16px;
-      border: 1px solid var(--border);
-      background: rgba(10,12,16,.96);
-      box-shadow: 0 18px 70px rgba(0,0,0,.65);
-      padding: 6px;
-      z-index: 9997;
-      display:none;
+    .meRow{
+      display:flex; gap:10px; align-items:center;
+      padding:10px;
+      border-bottom:1px solid var(--line);
     }
-    #ctx.show{ display:block; }
-    .ctxItem{
+    .meMeta{ min-width:0; }
+    .meName{
+      display:flex; align-items:center; gap:8px;
+      font-weight:700;
+      white-space:nowrap;
+      overflow:hidden;
+      text-overflow:ellipsis;
+    }
+    .meStatus{
+      color:var(--muted);
+      font-size:12px;
+      white-space:nowrap;
+      overflow:hidden;
+      text-overflow:ellipsis;
+      margin-top:2px;
+    }
+    .meActions{
+      margin-left:auto;
+      display:flex; gap:6px;
+    }
+    .iconBtn{
+      width:30px;height:30px;border-radius:10px;
+      display:grid; place-items:center;
+      border:1px solid var(--line);
+      background:rgba(255,255,255,.02);
+    }
+    .iconBtn:hover{ border-color:#2d3a52; }
+
+    .threadList{
+      padding:8px;
+      overflow:auto;
+    }
+    .threadSecTitle{
+      color:var(--muted);
+      font-size:11px;
+      letter-spacing:.12em;
+      text-transform:uppercase;
+      margin:10px 6px 6px;
+      display:flex; align-items:center; justify-content:space-between;
+    }
+    .thread{
+      display:flex; align-items:center;
+      gap:10px;
+      padding:7px 8px;
+      border-radius:12px;
+      cursor:pointer;
+      border:1px solid transparent;
+      user-select:none;
+    }
+    .thread:hover{ background:rgba(255,255,255,.03); }
+    .thread.active{ background:rgba(110,168,254,.10); border-color:#23324b; }
+    .threadName{
+      white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+      flex:1 1 auto;
+    }
+    .ping{
+      min-width:18px;
+      height:18px;
+      padding:0 6px;
+      border-radius:99px;
+      background:var(--danger);
+      color:#fff;
+      font-size:11px;
+      display:none;
+      align-items:center;
+      justify-content:center;
+      font-weight:700;
+    }
+    .ping.show{ display:flex; }
+    .threadMeta{
+      display:flex; align-items:center; gap:6px;
+    }
+
+    /* Main chat */
+    .main{
+      display:flex;
+      flex-direction:column;
+      min-width:0;
+      background:var(--bg);
+    }
+    .topbar{
       display:flex;
       align-items:center;
       justify-content:space-between;
-      gap:10px;
-      padding:10px 10px;
-      border-radius: 12px;
-      cursor:pointer;
-      user-select:none;
-      border:1px solid transparent;
-      color: rgba(235,240,255,.92);
-      font-weight:900;
-      font-size:12px;
+      padding:10px 12px;
+      border-bottom:1px solid var(--line);
+      background:rgba(0,0,0,.12);
+      backdrop-filter: blur(10px);
     }
-    .ctxItem:hover{ background: rgba(255,92,122,.10); border-color: rgba(255,92,122,.22); }
-    .ctxItem small{ opacity:.75; font-weight:900; }
+    .topTitle{
+      display:flex;
+      align-items:center;
+      gap:10px;
+      min-width:0;
+    }
+    .topTitle h1{
+      margin:0;
+      font-size:14px;
+      font-weight:800;
+      white-space:nowrap;
+      overflow:hidden;
+      text-overflow:ellipsis;
+    }
+    .sub{
+      color:var(--muted);
+      font-size:12px;
+      margin-left:2px;
+    }
+
+    .messages{
+      flex:1 1 auto;
+      overflow:auto;
+      padding:10px 12px;
+      display:flex;
+      flex-direction:column;
+      gap:6px;
+    }
+    .msg{
+      display:flex;
+      gap:10px;
+      padding:6px 8px;
+      border-radius:12px;
+      border:1px solid transparent;
+      position:relative;
+    }
+    .msg:hover{ background:rgba(255,255,255,.02); }
+    .msg.mention{ border-color:rgba(255,77,79,.45); background:rgba(255,77,79,.06); }
+    .msg.announcement{
+      border-color:rgba(255,77,79,.35);
+      background:linear-gradient(90deg, rgba(255,77,79,.10), rgba(110,168,254,.06));
+    }
+    .msgHdr{
+      display:flex;
+      align-items:center;
+      gap:8px;
+      min-width:0;
+    }
+    .msgName{
+      font-weight:800;
+      font-size:13px;
+      white-space:nowrap;
+      overflow:hidden;
+      text-overflow:ellipsis;
+      cursor:pointer;
+    }
+    .msgTime{
+      font-size:11px;
+      color:var(--muted);
+      margin-left:auto;
+      white-space:nowrap;
+    }
+    .msgBody{
+      margin-top:3px;
+      color:var(--text);
+      white-space:pre-wrap;
+      word-break:break-word;
+      line-height:1.25;
+    }
+    .msgNote{
+      color:var(--muted);
+      font-size:11px;
+      margin-top:2px;
+    }
+    .msgCol{
+      min-width:0;
+      flex:1 1 auto;
+    }
+
+    .composerWrap{
+      border-top:1px solid var(--line);
+      padding:8px 10px 10px;
+      background:rgba(0,0,0,.12);
+    }
+    .composer{
+      display:flex;
+      gap:8px;
+      align-items:flex-end;
+      background:rgba(255,255,255,.02);
+      border:1px solid var(--line);
+      border-radius:14px;
+      padding:8px 10px;
+    }
+    textarea{
+      border:none;
+      resize:none;
+      width:100%;
+      min-height:18px;
+      max-height:140px;
+      background:transparent;
+      padding:0;
+      line-height:1.25;
+      outline:none;
+      overflow:auto;
+    }
+    .sendBtn{
+      border:1px solid #2a3a55;
+      background:rgba(110,168,254,.14);
+      padding:7px 10px;
+      border-radius:12px;
+      font-weight:800;
+    }
+    .sendBtn:disabled{
+      opacity:.5; cursor:not-allowed;
+    }
+    .cooldownBar{
+      height:3px;
+      margin-top:8px;
+      border-radius:99px;
+      background:rgba(255,255,255,.08);
+      overflow:hidden;
+      display:none;
+    }
+    .cooldownBar > div{
+      height:100%;
+      width:0%;
+      background:var(--accent);
+    }
+    .cooldownBar.show{ display:block; }
+
+    /* Right panel */
+    .right{
+      background:linear-gradient(180deg,var(--panel),var(--panel2));
+      border-left:1px solid var(--line);
+      display:flex;
+      flex-direction:column;
+      min-width:260px;
+    }
+    .rightHdr{
+      padding:10px;
+      border-bottom:1px solid var(--line);
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+    }
+    .rightHdr h2{
+      margin:0;
+      font-size:12px;
+      letter-spacing:.12em;
+      text-transform:uppercase;
+      color:var(--muted);
+    }
+    .onlineList{
+      padding:8px;
+      overflow:auto;
+      display:flex;
+      flex-direction:column;
+      gap:6px;
+    }
+    .userRow{
+      display:flex;
+      align-items:center;
+      gap:10px;
+      padding:8px 8px;
+      border-radius:12px;
+      border:1px solid transparent;
+      cursor:pointer;
+    }
+    .userRow:hover{ background:rgba(255,255,255,.03); }
+    .userMeta{ min-width:0; flex:1 1 auto; }
+    .userName{
+      display:flex; gap:8px; align-items:center;
+      font-weight:800;
+      font-size:13px;
+      white-space:nowrap;
+      overflow:hidden;
+      text-overflow:ellipsis;
+    }
+    .userStatus{
+      font-size:12px;
+      color:var(--muted);
+      white-space:nowrap;
+      overflow:hidden;
+      text-overflow:ellipsis;
+      margin-top:2px;
+    }
+    .badgeRow{ display:flex; gap:6px; flex-wrap:wrap; }
 
     /* Modal */
-    #backdrop{
+    .backdrop{
       position:fixed; inset:0;
+      background:rgba(0,0,0,.55);
       display:none;
       align-items:center;
       justify-content:center;
-      padding:24px;
-      background: rgba(0,0,0,.58);
-      z-index: 9996;
+      padding:20px;
     }
-    #backdrop.show{ display:flex; }
+    .backdrop.show{ display:flex; }
     .modal{
-      width: min(680px, 100%);
-      border-radius: 22px;
-      border: 1px solid var(--border);
-      background: rgba(10,12,16,.96);
-      box-shadow: 0 24px 90px rgba(0,0,0,.70);
+      width:min(520px, 96vw);
+      background:linear-gradient(180deg, #111621, #0d1015);
+      border:1px solid #23324b;
+      border-radius:16px;
+      box-shadow: var(--shadow);
       overflow:hidden;
+      animation:pop .14s ease-out;
     }
-    .modalHead{
-      height: 52px;
+    @keyframes pop{ from{ transform:scale(.98); opacity:.4 } to{ transform:scale(1); opacity:1 } }
+    .modalHdr{
+      padding:12px 12px;
+      border-bottom:1px solid var(--line);
       display:flex;
       align-items:center;
       justify-content:space-between;
       gap:10px;
-      padding:0 14px;
-      border-bottom:1px solid var(--border2);
-      background: rgba(12,15,20,.65);
     }
-    .modalHead b{ font-size:13px; letter-spacing:.2px; }
-    #modalClose{
-      width:36px;height:36px;border-radius:14px;
-      border:1px solid var(--border2);
-      background: rgba(7,8,11,.35);
-      color: rgba(235,240,255,.90);
-      font-weight:900;
-      cursor:pointer;
+    .modalHdr h3{ margin:0; font-size:14px; }
+    .modalBody{ padding:12px; display:flex; flex-direction:column; gap:10px; }
+    .row{ display:flex; gap:10px; align-items:center; }
+    .row > label{ width:110px; color:var(--muted); font-size:12px; }
+    .row > input, .row > select{
+      flex:1 1 auto;
+      padding:8px 10px;
+      border-radius:12px;
+      background:rgba(255,255,255,.02);
     }
-    #modalClose:hover{ border-color: rgba(139,182,255,.22); }
-    .modalBody{ padding:14px; }
+    .row > textarea{
+      flex:1 1 auto;
+      min-height:70px;
+      border:1px solid var(--line);
+      border-radius:12px;
+      padding:8px 10px;
+      background:rgba(255,255,255,.02);
+    }
     .modalFoot{
-      padding: 12px 14px 14px;
-      border-top:1px solid var(--border2);
-      display:flex;
-      justify-content:flex-end;
-      gap:10px;
-      background: rgba(12,15,20,.55);
+      padding:12px;
+      border-top:1px solid var(--line);
+      display:flex; justify-content:flex-end; gap:8px;
+    }
+    .btn{
+      padding:8px 10px;
+      border-radius:12px;
+      border:1px solid var(--line);
+      background:rgba(255,255,255,.02);
+      font-weight:800;
+    }
+    .btnPrimary{
+      border-color:#2a3a55;
+      background:rgba(110,168,254,.14);
+    }
+    .btnDanger{
+      border-color:#5a2323;
+      background:rgba(255,77,79,.10);
     }
 
-    /* Loading overlay */
-    #loading{
-      position:fixed; inset:0;
+    /* Context menu */
+    .ctx{
+      position:fixed;
+      z-index:1000;
+      min-width:180px;
+      background:#0f1520;
+      border:1px solid #23324b;
+      border-radius:12px;
+      box-shadow: var(--shadow);
+      overflow:hidden;
       display:none;
-      align-items:center;
-      justify-content:center;
-      background: rgba(0,0,0,.55);
-      z-index: 9995;
     }
-    #loading.show{ display:flex; }
-    .loadCard{
-      width:min(520px, 100%);
-      border-radius: 22px;
-      border:1px solid var(--border);
-      background: rgba(10,12,16,.96);
-      box-shadow: 0 24px 90px rgba(0,0,0,.70);
-      padding: 16px;
-    }
-    .loadRow{
-      display:flex; align-items:center; justify-content:space-between;
+    .ctx.show{ display:block; }
+    .ctxItem{
+      padding:10px 12px;
+      cursor:pointer;
+      font-weight:700;
+      font-size:13px;
+      display:flex; justify-content:space-between;
       gap:10px;
     }
-    .spinner{
-      width:16px; height:16px;
-      border-radius:999px;
-      border:2px solid rgba(154,163,183,.25);
-      border-top-color: rgba(235,240,255,.80);
-      animation: spin 900ms linear infinite;
+    .ctxItem:hover{ background:rgba(255,255,255,.04); }
+    .ctxItem.danger{ color:#ffb3b3; }
+    .toastWrap{
+      position:fixed;
+      bottom:16px;
+      left:16px;
+      display:flex;
+      flex-direction:column;
+      gap:8px;
+      z-index:1200;
     }
-    @keyframes spin{ to{ transform: rotate(360deg); } }
-    #loadMsg{ font-weight:900; font-size:13px; }
-    #loadTag{
-      font-size:11px;
-      color: rgba(154,163,183,.80);
-      font-family: var(--mono);
-      padding:4px 8px;
-      border-radius:999px;
-      border:1px solid var(--border2);
-      background: rgba(7,8,11,.35);
+    .toast{
+      background:#0f1520;
+      border:1px solid #23324b;
+      border-radius:12px;
+      padding:10px 12px;
+      box-shadow: var(--shadow);
+      max-width:min(520px, 92vw);
+      color:var(--text);
+      animation: pop .14s ease-out;
     }
+    .toast small{ color:var(--muted); display:block; margin-top:2px; }
 
     /* Responsive */
-    @media (max-width: 1060px){
-      .layout{ grid-template-columns: 300px 1fr 280px; }
+    @media (max-width: 980px){
+      .app{ grid-template-columns: 220px 1fr; }
+      .right{ display:none; }
     }
-    @media (max-width: 940px){
-      .layout{ grid-template-columns: 1fr; }
-      .panel.right{ display:none; }
-      .panel.left{ display:none; }
-      .topLeft{ min-width: 0; }
-    }
-    @media (max-width: 860px){
-      .loginCard{ grid-template-columns:1fr; }
-      .loginHero{ border-right:none; border-bottom:1px solid var(--border2); }
+    @media (max-width: 720px){
+      .app{ grid-template-columns: 1fr; }
+      .side{ display:none; }
+      .topbar{ position:sticky; top:0; z-index:20; }
     }
   </style>
 </head>
 <body>
-
-  <!-- Custom cursor -->
-  <div id="cursor"></div>
-
-  <!-- LOGIN -->
-  <div id="loginWrap">
-    <div class="loginCard">
-      <div class="loginHero">
-        <div class="brand">
-          <div class="logo"></div>
-          <div>
-            <h1>tonkotsu.online</h1>
-            <div style="color:rgba(154,163,183,.75);font-size:12px;margin-top:2px">compact • black • realtime</div>
-          </div>
+  <div class="app">
+    <!-- LEFT -->
+    <aside class="side">
+      <div class="brand">
+        <div class="logo">
+          <div class="dot online" id="meDot"></div>
+          <span>tonkotsu.online</span>
         </div>
-        <div class="tag">
-          A Discord-like mini chat with: global chat, DMs, groups, presence, profiles, reports, and red ping mentions.
-          <div style="margin-top:12px;color:rgba(154,163,183,.78)">
-            Tip: Right-click messages for <b>Edit / Delete / Report</b>. Click names to open profiles.
-          </div>
+        <span class="miniBadge" id="envBadge">BETA</span>
+      </div>
+
+      <div class="meRow">
+        <div class="dot online" id="meDot2"></div>
+        <div class="meMeta">
+          <div class="meName" id="meName">...</div>
+          <div class="meStatus" id="meStatus">...</div>
         </div>
-        <div class="pillRow">
-          <div class="pill">Right click menus</div>
-          <div class="pill">Presence modes</div>
-          <div class="pill">Custom status</div>
-          <div class="pill">Badges</div>
-          <div class="pill">Groups + invite</div>
-          <div class="pill">Mentions = red pings</div>
+        <div class="meActions">
+          <button class="iconBtn" id="btnProfile" title="Profile">👤</button>
+          <button class="iconBtn" id="btnAuth" title="Login/Register">🔐</button>
         </div>
       </div>
 
-      <div class="loginForm">
-        <div>
-          <div class="fieldLabel">USERNAME</div>
-          <input id="loginUser" class="input" autocomplete="username" placeholder="e.g. fishyx1" />
+      <div class="threadList" id="threadList">
+        <div class="threadSecTitle">
+          <span>Chats</span>
+          <button class="iconBtn" id="btnNew" title="New DM / Group">＋</button>
         </div>
-        <div>
-          <div class="fieldLabel">PASSWORD</div>
-          <input id="loginPass" class="input" type="password" autocomplete="current-password" placeholder="••••••••" />
-        </div>
-
-        <div class="btnRow">
-          <button class="btn primary" id="btnLogin">Sign in</button>
-          <button class="btn" id="btnGuest">Guest</button>
-        </div>
-
-        <div id="loginMsg"></div>
-
-        <div style="margin-top:auto;color:rgba(154,163,183,.72);font-size:11px;line-height:1.5">
-          Guest notes: guests can DM anyone and create groups, but guests cannot add friends and cannot be added.
-        </div>
+        <div id="threads"></div>
       </div>
-    </div>
-  </div>
+    </aside>
 
-  <!-- APP -->
-  <div id="app">
-    <div class="appTop">
-      <div class="topLeft">
-        <div class="logo" style="width:32px;height:32px;border-radius:14px"></div>
+    <!-- MAIN -->
+    <main class="main">
+      <div class="topbar">
         <div class="topTitle">
-          <b>tonkotsu.online</b>
-          <span id="subtitle">connected</span>
+          <div class="dot online" id="threadDot"></div>
+          <div style="min-width:0">
+            <h1 id="threadTitle">Global</h1>
+            <div class="sub" id="threadSub">Real-time chat</div>
+          </div>
+        </div>
+
+        <div class="row" style="gap:8px">
+          <button class="btn" id="btnAnnounce" style="display:none" title="Announcement">📢 Announce</button>
+          <button class="btn" id="btnLogout" style="display:none">Logout</button>
         </div>
       </div>
 
-      <div class="topActions">
-        <div class="chip">
-          <span style="opacity:.8">online</span>
-          <b id="onlineCount" style="margin-left:6px">0</b>
+      <div class="messages" id="messages"></div>
+
+      <div class="composerWrap">
+        <div class="composer">
+          <textarea id="composer" placeholder="Message..." rows="1"></textarea>
+          <button class="sendBtn" id="sendBtn">Send</button>
         </div>
-        <button class="btn" id="btnUser">Profile</button>
-        <button class="btn danger" id="btnLogout">Logout</button>
+        <div class="cooldownBar" id="cooldownBar"><div id="cooldownFill"></div></div>
       </div>
-    </div>
+    </main>
 
-    <div class="layout">
-      <!-- LEFT -->
-      <div class="panel left">
-        <div class="panelHead">
-          <b>Threads</b>
-          <div class="mini">
-            <button class="btn" id="btnAddFriend" style="padding:8px 10px;border-radius:14px">Add</button>
-            <button class="btn" id="btnNewGroup" style="padding:8px 10px;border-radius:14px">Group</button>
-          </div>
-        </div>
-
-        <div class="leftBody">
-          <div class="searchWrap">
-            <input id="searchThreads" class="input" placeholder="Search threads…" />
-          </div>
-          <div id="threadList" class="threadList"></div>
-        </div>
+    <!-- RIGHT -->
+    <aside class="right">
+      <div class="rightHdr">
+        <h2>Online</h2>
+        <span class="miniBadge" id="onlineCount">0</span>
       </div>
-
-      <!-- CENTER -->
-      <div class="panel center">
-        <div class="panelHead">
-          <div style="display:flex;flex-direction:column;line-height:1.1">
-            <b id="centerH">Global</b>
-            <div id="centerS" style="font-size:11px;color:rgba(154,163,183,.78)">Public chat</div>
-          </div>
-
-          <div class="mini" style="gap:10px">
-            <div class="chip">
-              <span id="presenceDot" class="dot" style="width:9px;height:9px"></span>
-              <span id="presenceLabel" style="font-weight:900">online</span>
-            </div>
-
-            <button class="btn" id="btnPresenceOnline" style="padding:8px 10px;border-radius:14px">On</button>
-            <button class="btn" id="btnPresenceIdle" style="padding:8px 10px;border-radius:14px">Idle</button>
-            <button class="btn" id="btnPresenceDnd" style="padding:8px 10px;border-radius:14px">DND</button>
-            <button class="btn" id="btnPresenceInv" style="padding:8px 10px;border-radius:14px">Inv</button>
-
-            <button class="btn" id="btnSettings" style="padding:8px 10px;border-radius:14px">⚙</button>
-          </div>
-        </div>
-
-        <div id="centerBody" class="centerBody"></div>
-
-        <div id="composer" class="composer">
-          <input id="msgInput" class="input" placeholder="Message…" />
-          <button id="btnSend" class="btn primary">Send</button>
-
-          <div class="cooldownWrap" id="cooldownWrap">
-            <div id="cooldownText"></div>
-            <div id="cooldownBar"></div>
-          </div>
-        </div>
-      </div>
-
-      <!-- RIGHT -->
-      <div class="panel right">
-        <div class="panelHead">
-          <b>Online</b>
-          <div class="mini">
-            <span style="color:rgba(154,163,183,.75)">presence + status</span>
-          </div>
-        </div>
-        <div id="onlineUsers" class="rightBody"></div>
-      </div>
-    </div>
+      <div class="onlineList" id="onlineList"></div>
+    </aside>
   </div>
 
-  <!-- Context menu -->
-  <div id="ctx"></div>
-
-  <!-- Modal -->
-  <div id="backdrop">
-    <div class="modal" role="dialog" aria-modal="true">
-      <div class="modalHead">
-        <b id="modalTitle"></b>
-        <button id="modalClose" aria-label="Close">✕</button>
+  <!-- Modals -->
+  <div class="backdrop" id="backdrop">
+    <div class="modal" id="modal">
+      <div class="modalHdr">
+        <h3 id="modalTitle">Modal</h3>
+        <button class="iconBtn" id="modalClose" title="Close">✕</button>
       </div>
       <div class="modalBody" id="modalBody"></div>
       <div class="modalFoot" id="modalFoot"></div>
     </div>
   </div>
 
-  <!-- Loading -->
-  <div id="loading">
-    <div class="loadCard">
-      <div class="loadRow">
-        <div style="display:flex;align-items:center;gap:10px">
-          <div class="spinner"></div>
-          <div id="loadMsg">Loading…</div>
-        </div>
-        <div id="loadTag">boot</div>
-      </div>
-      <div style="margin-top:10px;color:rgba(154,163,183,.75);font-size:12px;line-height:1.5">
-        If it gets stuck, refresh once. Duplicate refresh loops are blocked.
-      </div>
-    </div>
-  </div>
+  <!-- Context menu -->
+  <div class="ctx" id="ctx"></div>
 
-  <!-- Socket.IO (served by your server) -->
+  <div class="toastWrap" id="toasts"></div>
+
   <script src="/socket.io/socket.io.js"></script>
-  <!-- Your app script -->
   <script src="/script.js"></script>
-</body>
-</html>
-    .ctxItem.danger:hover
 </body>
 </html>
